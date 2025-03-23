@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image, UnidentifiedImageError
-from PyQt6.QtCore import QRectF, QSize, Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QCache, QRectF, QSize, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import (QColor, QDragEnterEvent, QDropEvent, QImage, QPainter,
                          QPen, QPixmap)
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
@@ -214,6 +214,7 @@ class ImageGridApp(QWidget):
         self.preview_labels: List[QLabel] = []
         self.pdf_thread: Optional[PDFGenerationThread] = None
         self.progress_dialog: Optional[QProgressDialog] = None
+        self.thumbnail_cache = QCache(100)  # サムネイルキャッシュ（最大100個）
         self.initUI()
 
     def initUI(self) -> None:
@@ -330,6 +331,23 @@ class ImageGridApp(QWidget):
             self.col_width_spinbox.setRange(10.0, 297.0)   # A3の幅制限
         self.update_preview()
 
+    def _create_thumbnail(self, img_path: str) -> QPixmap:
+        """画像のサムネイルを生成（キャッシュ付き）"""
+        # キャッシュからサムネイルを取得
+        cached_thumbnail = self.thumbnail_cache.object(img_path)
+        if cached_thumbnail:
+            return cached_thumbnail
+
+        # サムネイルを生成
+        pixmap = QPixmap(img_path)
+        thumbnail = pixmap.scaled(THUMBNAIL_SIZE[0], THUMBNAIL_SIZE[1],
+                                Qt.AspectRatioMode.KeepAspectRatio,
+                                Qt.TransformationMode.SmoothTransformation)
+        
+        # キャッシュに保存
+        self.thumbnail_cache.insert(img_path, thumbnail)
+        return thumbnail
+
     def update_preview(self):
         # 既存のプレビューをクリア
         for label in self.preview_labels:
@@ -351,7 +369,7 @@ class ImageGridApp(QWidget):
         page_width, page_height = self.settings.page_size
         
         # プレビューのサイズを計算（A4/A3の比率を保持）
-        preview_height = 600  # プレビューの高さを固定
+        preview_height = DEFAULT_PREVIEW_HEIGHT
         preview_width = int(preview_height * (page_width / page_height))
         
         # プレビュー用のフレームを作成（用紙を模したフレーム）
@@ -383,7 +401,7 @@ class ImageGridApp(QWidget):
                     
                     if self.image_paths:
                         img_path = self.image_paths[img_index]
-                        pixmap = QPixmap(img_path)
+                        thumbnail = self._create_thumbnail(img_path)
                         
                         # セルのサイズとアスペクト比を計算
                         cell_rect_width = cell_width
@@ -391,7 +409,7 @@ class ImageGridApp(QWidget):
                         cell_aspect = cell_rect_width / cell_rect_height
                         
                         # 画像のアスペクト比を計算
-                        img_aspect = pixmap.width() / pixmap.height()
+                        img_aspect = thumbnail.width() / thumbnail.height()
                         
                         # アスペクト比に基づいてサイズを調整
                         if img_aspect > cell_aspect:
@@ -407,7 +425,7 @@ class ImageGridApp(QWidget):
                         
                         # 画像を描画
                         target_rect = QRectF(x, y, new_width, new_height)
-                        painter.drawPixmap(target_rect, pixmap, pixmap.rect())
+                        painter.drawPixmap(target_rect, thumbnail, thumbnail.rect())
             
             # グリッド線の描画
             if self.settings.grid_line_visible:
@@ -507,6 +525,7 @@ class ImageGridApp(QWidget):
         """アプリケーション終了時の処理"""
         try:
             self.settings.save_to_file()  # 設定を保存
+            self.thumbnail_cache.clear()  # サムネイルキャッシュをクリア
         except Exception as e:
             logger.error(f"設定の保存中にエラーが発生しました: {e}")
             QMessageBox.warning(self, "警告", "設定の保存に失敗しました。")
