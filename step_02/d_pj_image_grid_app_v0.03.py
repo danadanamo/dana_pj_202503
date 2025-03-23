@@ -13,9 +13,9 @@ from PyQt6.QtGui import (QColor, QDragEnterEvent, QDropEvent, QImage, QPainter,
                          QPen, QPixmap)
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
                              QDoubleSpinBox, QFileDialog, QFrame, QGridLayout,
-                             QLabel, QMainWindow, QMenu, QMenuBar, QMessageBox,
-                             QProgressDialog, QPushButton, QScrollArea,
-                             QSpinBox, QVBoxLayout, QWidget)
+                             QHBoxLayout, QLabel, QMainWindow, QMenu, QMenuBar,
+                             QMessageBox, QProgressDialog, QPushButton,
+                             QScrollArea, QSpinBox, QVBoxLayout, QWidget)
 from reportlab.lib.pagesizes import A3, A4
 from reportlab.pdfgen import canvas
 
@@ -275,21 +275,31 @@ class ImageGridApp(QMainWindow):
         # メニューバーの初期化
         self._init_menubar()
         
-        # メインレイアウトの初期化
-        main_layout = QVBoxLayout()
-        controls_layout = QVBoxLayout()
-
-        # コントロールの初期化
+        # メインレイアウトを QHBoxLayout に変更
+        main_layout = QHBoxLayout(self.central_widget)  # central_widget に QHBoxLayout を設定
+        
+        # 左パネル (設定項目)
+        controls_panel = QWidget()  # 左パネル用のQWidget
+        controls_layout = QVBoxLayout(controls_panel)  # 左パネルのレイアウト
         self._init_image_controls(controls_layout)
         self._init_grid_controls(controls_layout)
-        self._init_preview_area(main_layout)
-
-        main_layout.addLayout(controls_layout)
-        self.central_widget.setLayout(main_layout)
+        controls_panel.setLayout(controls_layout)  # 左パネルにレイアウトを適用
+        
+        # 右パネル (プレビュー)
+        preview_panel = QWidget()  # 右パネル用のQWidget
+        preview_layout = QVBoxLayout(preview_panel)  # 右パネルのレイアウト
+        self._init_preview_area(preview_layout)
+        preview_panel.setLayout(preview_layout)  # 右パネルにレイアウトを適用
+        
+        # メインレイアウトに左右パネルを追加
+        main_layout.addWidget(controls_panel)  # 左パネルをメインレイアウトに追加
+        main_layout.addWidget(preview_panel)  # 右パネルをメインレイアウトに追加
+        self.central_widget.setLayout(main_layout)  # central_widget にメインレイアウトを設定
+        
         self.setAcceptDrops(True)
         self.setWindowTitle("画像グリッド作成ツール")
-        self.resize(600, 500)
-
+        self.resize(800, 600)  # ウィンドウサイズを少し大きく
+        
         self.update_preview()
 
     def _init_menubar(self) -> None:
