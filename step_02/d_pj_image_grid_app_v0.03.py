@@ -13,9 +13,10 @@ from PyQt6.QtGui import (QColor, QDragEnterEvent, QDropEvent, QImage, QPainter,
                          QPen, QPixmap)
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
                              QDoubleSpinBox, QFileDialog, QFrame, QGridLayout,
-                             QHBoxLayout, QLabel, QMainWindow, QMenu, QMenuBar,
-                             QMessageBox, QProgressDialog, QPushButton,
-                             QScrollArea, QSpinBox, QVBoxLayout, QWidget)
+                             QGroupBox, QHBoxLayout, QLabel, QMainWindow,
+                             QMenu, QMenuBar, QMessageBox, QProgressDialog,
+                             QPushButton, QScrollArea, QSpinBox, QSplitter,
+                             QVBoxLayout, QWidget)
 from reportlab.lib.pagesizes import A3, A4
 from reportlab.pdfgen import canvas
 
@@ -275,30 +276,66 @@ class ImageGridApp(QMainWindow):
         # メニューバーの初期化
         self._init_menubar()
         
-        # メインレイアウトを QHBoxLayout に変更
-        main_layout = QHBoxLayout(self.central_widget)  # central_widget に QHBoxLayout を設定
+        # メインレイアウトを QVBoxLayout に変更（QSplitter を配置するため）
+        main_layout = QVBoxLayout(self.central_widget)
+        
+        # スプリッターの作成
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
         
         # 左パネル (設定項目)
-        controls_panel = QWidget()  # 左パネル用のQWidget
-        controls_layout = QVBoxLayout(controls_panel)  # 左パネルのレイアウト
-        self._init_image_controls(controls_layout)
-        self._init_grid_controls(controls_layout)
-        controls_panel.setLayout(controls_layout)  # 左パネルにレイアウトを適用
+        controls_panel = QWidget()
+        controls_layout = QVBoxLayout(controls_panel)
+        
+        # 画像操作グループ
+        image_group = QGroupBox("画像操作")
+        image_layout = QVBoxLayout()
+        self._init_image_controls(image_layout)
+        image_group.setLayout(image_layout)
+        controls_layout.addWidget(image_group)
+        
+        # グリッド設定グループ
+        grid_group = QGroupBox("グリッド設定")
+        grid_layout = QVBoxLayout()
+        self._init_grid_controls(grid_layout)
+        grid_group.setLayout(grid_layout)
+        controls_layout.addWidget(grid_group)
+        
+        # ページ設定グループ
+        page_group = QGroupBox("ページ設定")
+        page_layout = QVBoxLayout()
+        self._init_page_controls(page_layout)
+        page_group.setLayout(page_layout)
+        controls_layout.addWidget(page_group)
+        
+        # PDF生成グループ
+        pdf_group = QGroupBox("PDF出力")
+        pdf_layout = QVBoxLayout()
+        self._init_pdf_controls(pdf_layout)
+        pdf_group.setLayout(pdf_layout)
+        controls_layout.addWidget(pdf_group)
+        
+        controls_panel.setLayout(controls_layout)
         
         # 右パネル (プレビュー)
-        preview_panel = QWidget()  # 右パネル用のQWidget
-        preview_layout = QVBoxLayout(preview_panel)  # 右パネルのレイアウト
+        preview_panel = QWidget()
+        preview_layout = QVBoxLayout(preview_panel)
         self._init_preview_area(preview_layout)
-        preview_panel.setLayout(preview_layout)  # 右パネルにレイアウトを適用
+        preview_panel.setLayout(preview_layout)
         
-        # メインレイアウトに左右パネルを追加
-        main_layout.addWidget(controls_panel)  # 左パネルをメインレイアウトに追加
-        main_layout.addWidget(preview_panel)  # 右パネルをメインレイアウトに追加
-        self.central_widget.setLayout(main_layout)  # central_widget にメインレイアウトを設定
+        # スプリッターに左右パネルを追加
+        main_splitter.addWidget(controls_panel)
+        main_splitter.addWidget(preview_panel)
+        
+        # スプリッターの初期サイズを設定（左:右 = 1:2）
+        main_splitter.setStretchFactor(0, 1)  # 左パネル
+        main_splitter.setStretchFactor(1, 2)  # 右パネル
+        
+        # メインレイアウトにスプリッターを追加
+        main_layout.addWidget(main_splitter)
         
         self.setAcceptDrops(True)
         self.setWindowTitle("画像グリッド作成ツール")
-        self.resize(800, 600)  # ウィンドウサイズを少し大きく
+        self.resize(1000, 700)  # ウィンドウサイズをさらに大きく
         
         self.update_preview()
 
@@ -388,15 +425,18 @@ class ImageGridApp(QMainWindow):
         # グリッド線の設定
         self._init_grid_line_controls(layout)
 
+    def _init_page_controls(self, layout: QVBoxLayout) -> None:
+        """ページ設定関連のコントロールを初期化"""
         # ページサイズ選択
         self.page_size_combo = QComboBox()
         self.page_size_combo.addItems(["A4", "A3"])
-        # 保存された設定に基づいて初期選択を設定
         self.page_size_combo.setCurrentText("A4" if self.settings.page_size == A4 else "A3")
         self.page_size_combo.currentTextChanged.connect(self.update_page_size)
         layout.addWidget(QLabel("用紙サイズ:"))
         layout.addWidget(self.page_size_combo)
 
+    def _init_pdf_controls(self, layout: QVBoxLayout) -> None:
+        """PDF出力関連のコントロールを初期化"""
         # PDF生成ボタン
         self.btn_generate_pdf = QPushButton('PDFを作成')
         self.btn_generate_pdf.clicked.connect(self.generate_pdf)
