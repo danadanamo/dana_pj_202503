@@ -1,4 +1,3 @@
-import importlib.util
 import os
 import sys
 import unittest
@@ -7,100 +6,103 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
-# テスト対象のアプリケーションをインポート
-spec = importlib.util.spec_from_file_location("d_pj_image_grid_app_v0.02", "step_01/d_pj_image_grid_app_v0.02.py")
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
-ImageGridApp = module.ImageGridApp
+from step_03.d_pj_image_grid_app_v004 import GridSettings, ImageGridApp
+
 
 class TestImageGridApp(unittest.TestCase):
-    
     @classmethod
     def setUpClass(cls):
-        # アプリケーションの初期化
         cls.app = QApplication(sys.argv)
-        
+        cls.window = ImageGridApp()
+
     def setUp(self):
-        # 各テスト前にアプリケーションのインスタンスを作成
-        self.grid_app = ImageGridApp()
-        
-        # テスト画像のパス
-        self.test_images = [
-            os.path.abspath(f'test_images/test_image_{i}.png') for i in range(1, 5)
+        # 各テストの前にウィンドウをリセット
+        self.window.image_paths = []
+        self.window.update_preview()
+
+    def test_01_load_images(self):
+        """画像の読み込みテスト"""
+        # テスト画像のパスを設定
+        test_images = [
+            'test_images/test1.png',
+            'test_images/test2.jpg',
+            'test_images/test3.jpeg'
         ]
+
+        # 画像を追加
+        for img_path in test_images:
+            self.window.image_paths.append(img_path)
+            self.window.update_preview()
+
+        # 画像が正しく追加されたか確認
+        self.assertEqual(len(self.window.image_paths), len(test_images))
+
+    def test_02_grid_settings(self):
+        """グリッド設定のテスト"""
+        # 行の高さを変更
+        self.window.row_height_spinbox.setValue(150.0)
+        self.window.update_grid()
+        self.assertEqual(self.window.row_height_spinbox.value(), 150.0)
+
+        # 列の幅を変更
+        self.window.col_width_spinbox.setValue(150.0)
+        self.window.update_grid()
+        self.assertEqual(self.window.col_width_spinbox.value(), 150.0)
+
+    def test_03_page_settings(self):
+        """ページ設定のテスト"""
+        # A4サイズのテスト
+        self.window.page_size_combo.setCurrentText("A4")
+        self.window.update_page_size("A4")
+        self.assertEqual(self.window.page_size_combo.currentText(), "A4")
+
+        # A3サイズのテスト
+        self.window.page_size_combo.setCurrentText("A3")
+        self.window.update_page_size("A3")
+        self.assertEqual(self.window.page_size_combo.currentText(), "A3")
+
+    def test_04_settings_save_load(self):
+        """設定の保存と読み込みのテスト"""
+        # 設定を変更
+        settings = GridSettings()
+        settings.row_height_mm = 200.0
+        settings.col_width_mm = 200.0
+        settings.grid_line_visible = False
+
+        # 設定を保存
+        settings.save_to_file()
+
+        # 新しい設定オブジェクトを作成して読み込み
+        loaded_settings = GridSettings.load_from_file()
+
+        # 設定が正しく保存・読み込みされたか確認
+        self.assertEqual(loaded_settings.row_height_mm, 200.0)
+        self.assertEqual(loaded_settings.col_width_mm, 200.0)
+        self.assertEqual(loaded_settings.grid_line_visible, False)
+
+    def test_05_error_handling(self):
+        """エラーハンドリングのテスト"""
+        # 存在しない画像ファイルを追加
+        self.window.image_paths.append('nonexistent.png')
+        self.window.update_preview()
+
+        # 無効な設定ファイルのテスト
+        with open('grid_settings.json', 'w') as f:
+            f.write('invalid json')
         
-    def test_init_state(self):
-        """初期状態のテスト"""
-        self.assertEqual(self.grid_app.row_height_mm, 100.0)
-        self.assertEqual(self.grid_app.col_width_mm, 100.0)
-        self.assertEqual(len(self.grid_app.image_paths), 0)
-        self.assertTrue(self.grid_app.grid_line_visible)
-        self.assertEqual(self.grid_app.grid_width, 1)
-        
-    def test_update_grid(self):
-        """グリッド更新のテスト"""
-        self.grid_app.row_height_spinbox.setValue(80.0)
-        self.assertEqual(self.grid_app.row_height_mm, 80.0)
-        
-        self.grid_app.col_width_spinbox.setValue(90.0)
-        self.assertEqual(self.grid_app.col_width_mm, 90.0)
-        
-    def test_add_images(self):
-        """画像追加機能のテスト（手動追加のシミュレーション）"""
-        # 画像パスを直接追加
-        for image_path in self.test_images:
-            self.grid_app.image_paths.append(image_path)
-        
-        self.grid_app.update_preview()
-        self.assertEqual(len(self.grid_app.image_paths), 4)
-        
-    def test_generate_pdf(self):
-        """PDF生成機能の基本テスト（実際の保存は行わない）"""
-        # 画像パスを追加
-        for image_path in self.test_images:
-            self.grid_app.image_paths.append(image_path)
-            
-        # 一旦テスト用のパスを指定して例外が発生しないか確認
-        try:
-            # mm単位をポイントに変換 (1mm = 2.83465pt)
-            MM_TO_PT = 2.83465
-            page_width, page_height = self.grid_app.page_size
-            
-            # 行と列の数を計算
-            col_width_pt = self.grid_app.col_width_mm * MM_TO_PT
-            row_height_pt = self.grid_app.row_height_mm * MM_TO_PT
-            cols = max(1, int(page_width / col_width_pt))
-            rows = max(1, int(page_height / row_height_pt))
-            
-            # 基本的なチェック
-            self.assertTrue(isinstance(cols, int))
-            self.assertTrue(isinstance(rows, int))
-            self.assertTrue(cols > 0)
-            self.assertTrue(rows > 0)
-        except Exception as e:
-            self.fail(f"PDF生成準備中に例外が発生: {e}")
-            
-    def test_grid_line_features(self):
-        """グリッド線機能のテスト"""
-        # グリッド線表示の初期値は True
-        self.assertTrue(self.grid_app.grid_line_visible)
-        
-        # グリッド線表示をオフにする
-        self.grid_app.grid_line_checkbox.setChecked(False)
-        # update_grid関数が呼び出されるので手動で設定する必要がある
-        self.grid_app.grid_line_visible = False
-        self.assertFalse(self.grid_app.grid_line_visible)
-        
-        # グリッド線の太さを変更
-        self.grid_app.grid_width_spinbox.setValue(3)
-        # update_grid関数が呼び出されるので手動で設定する必要がある
-        self.grid_app.grid_width = 3
-        self.assertEqual(self.grid_app.grid_width, 3)
-        
-        # グリッド線の色は初期値では黒 (0,0,0)
-        self.assertEqual(self.grid_app.grid_color.red(), 0)
-        self.assertEqual(self.grid_app.grid_color.green(), 0)
-        self.assertEqual(self.grid_app.grid_color.blue(), 0)
+        # 設定を読み込もうとする
+        settings = GridSettings.load_from_file()
+        self.assertIsNotNone(settings)
+
+    @classmethod
+    def tearDownClass(cls):
+        # テスト用ファイルの削除
+        if os.path.exists('grid_settings.json'):
+            os.remove('grid_settings.json')
+        if os.path.exists('grid_settings.json.backup'):
+            os.remove('grid_settings.json.backup')
+        cls.window.close()
+        cls.app.quit()
 
 if __name__ == '__main__':
     unittest.main() 

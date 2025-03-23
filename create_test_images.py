@@ -1,21 +1,21 @@
+import os
+
 from PIL import Image, ImageDraw
 
-# 異なる色のテスト画像を4つ作成
-colors = ['red', 'green', 'blue', 'yellow']
-size = (300, 300)
 
-for i, color in enumerate(colors):
-    img = Image.new('RGB', size, (255, 255, 255))
+def create_test_image(size, color, filename):
+    img = Image.new('RGB', size, color)
     draw = ImageDraw.Draw(img)
-    if color == 'red':
-        draw.rectangle([(50, 50), (250, 250)], fill=(255, 0, 0))
-    elif color == 'green':
-        draw.rectangle([(50, 50), (250, 250)], fill=(0, 255, 0))
-    elif color == 'blue':
-        draw.rectangle([(50, 50), (250, 250)], fill=(0, 0, 255))
-    elif color == 'yellow':
-        draw.rectangle([(50, 50), (250, 250)], fill=(255, 255, 0))
-    
-    img.save(f'test_images/test_image_{i+1}.png')
-    
-print("テスト画像が作成されました。") 
+    # 画像にテキストを追加
+    draw.text((10, 10), filename, fill='white')
+    img.save(filename)
+
+# テスト用ディレクトリの作成
+os.makedirs('test_images', exist_ok=True)
+
+# テスト画像の生成
+create_test_image((800, 600), 'red', 'test_images/test1.png')
+create_test_image((800, 600), 'blue', 'test_images/test2.jpg')
+create_test_image((800, 600), 'green', 'test_images/test3.jpeg')
+
+print("テスト画像が生成されました。") 
