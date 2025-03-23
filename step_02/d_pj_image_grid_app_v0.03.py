@@ -1,8 +1,9 @@
+import json
 import logging
 import os
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image, UnidentifiedImageError
@@ -27,6 +28,7 @@ DEFAULT_COL_WIDTH_MM: float = 100.0
 DEFAULT_GRID_WIDTH: int = 1
 DEFAULT_PREVIEW_HEIGHT: int = 600
 THUMBNAIL_SIZE: Tuple[int, int] = (200, 200)  # プレビュー用のサムネイルサイズ
+SETTINGS_FILE: str = "grid_settings.json"  # 設定ファイルのパス
 
 
 @dataclass
@@ -38,6 +40,54 @@ class GridSettings:
     grid_color: QColor = QColor(0, 0, 0)
     grid_width: int = DEFAULT_GRID_WIDTH
     page_size: Tuple[float, float] = A4
+
+    def to_dict(self) -> Dict[str, Any]:
+        """設定を辞書形式に変換"""
+        settings_dict = asdict(self)
+        # QColorをRGB値のタプルに変換
+        settings_dict['grid_color'] = self.grid_color.getRgb()
+        # ページサイズを文字列に変換
+        settings_dict['page_size'] = 'A4' if self.page_size == A4 else 'A3'
+        return settings_dict
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'GridSettings':
+        """辞書から設定を復元"""
+        # QColorを復元
+        if 'grid_color' in data:
+            color_data = data['grid_color']
+            data['grid_color'] = QColor(*color_data)
+        
+        # ページサイズを復元
+        if 'page_size' in data:
+            data['page_size'] = A4 if data['page_size'] == 'A4' else A3
+        
+        return cls(**data)
+
+    def save_to_file(self, file_path: str = SETTINGS_FILE) -> None:
+        """設定をファイルに保存"""
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(self.to_dict(), f, indent=4)
+            logger.info(f"設定を保存しました: {file_path}")
+        except Exception as e:
+            logger.error(f"設定の保存中にエラーが発生しました: {e}")
+            raise
+
+    @classmethod
+    def load_from_file(cls, file_path: str = SETTINGS_FILE) -> 'GridSettings':
+        """設定をファイルから読み込み"""
+        try:
+            if not os.path.exists(file_path):
+                logger.info(f"設定ファイルが存在しません: {file_path}")
+                return cls()
+            
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return cls.from_dict(data)
+        except Exception as e:
+            logger.error(f"設定の読み込み中にエラーが発生しました: {e}")
+            return cls()
 
 
 class PDFGenerationThread(QThread):
@@ -160,7 +210,7 @@ class ImageGridApp(QWidget):
     def __init__(self):
         super().__init__()
         self.image_paths: List[str] = []
-        self.settings = GridSettings()
+        self.settings = GridSettings.load_from_file()  # 設定を読み込み
         self.preview_labels: List[QLabel] = []
         self.pdf_thread: Optional[PDFGenerationThread] = None
         self.progress_dialog: Optional[QProgressDialog] = None
@@ -216,6 +266,8 @@ class ImageGridApp(QWidget):
         # ページサイズ選択
         self.page_size_combo = QComboBox()
         self.page_size_combo.addItems(["A4", "A3"])
+        # 保存された設定に基づいて初期選択を設定
+        self.page_size_combo.setCurrentText("A4" if self.settings.page_size == A4 else "A3")
         self.page_size_combo.currentTextChanged.connect(self.update_page_size)
         layout.addWidget(QLabel("用紙サイズ:"))
         layout.addWidget(self.page_size_combo)
@@ -229,7 +281,7 @@ class ImageGridApp(QWidget):
         """グリッド線関連のコントロールを初期化"""
         self.grid_line_checkbox = QCheckBox("グリッド線を表示")
         self.grid_line_checkbox.setChecked(self.settings.grid_line_visible)
-        self.grid_line_checkbox.stateChanged.connect(self.update_preview)
+        self.grid_line_checkbox.stateChanged.connect(self.update_grid)
         layout.addWidget(self.grid_line_checkbox)
         
         self.grid_color_btn = QPushButton("グリッド線の色")
@@ -239,7 +291,7 @@ class ImageGridApp(QWidget):
         self.grid_width_spinbox = QSpinBox()
         self.grid_width_spinbox.setRange(1, 5)
         self.grid_width_spinbox.setValue(self.settings.grid_width)
-        self.grid_width_spinbox.valueChanged.connect(self.update_preview)
+        self.grid_width_spinbox.valueChanged.connect(self.update_grid)
         layout.addWidget(QLabel("線の太さ:"))
         layout.addWidget(self.grid_width_spinbox)
 
@@ -450,6 +502,15 @@ class ImageGridApp(QWidget):
                 self.image_paths.append(file_path)
         self.update_preview()
         print("画像を追加しました") # ←動作確認用
+
+    def closeEvent(self, event: Any) -> None:
+        """アプリケーション終了時の処理"""
+        try:
+            self.settings.save_to_file()  # 設定を保存
+        except Exception as e:
+            logger.error(f"設定の保存中にエラーが発生しました: {e}")
+            QMessageBox.warning(self, "警告", "設定の保存に失敗しました。")
+        super().closeEvent(event)
 
 
 if __name__ == '__main__':
