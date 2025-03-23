@@ -1,32 +1,152 @@
+import logging
 import os
 import sys
 import tempfile
+from typing import List, Optional
 
-from PIL import Image
-from PyQt6.QtCore import QRectF, QSize, Qt
+from PIL import Image, UnidentifiedImageError
+from PyQt6.QtCore import QRectF, QSize, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import (QColor, QDragEnterEvent, QDropEvent, QImage, QPainter,
                          QPen, QPixmap)
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
                              QDoubleSpinBox, QFileDialog, QFrame, QGridLayout,
-                             QLabel, QMessageBox, QPushButton, QScrollArea,
-                             QSpinBox, QVBoxLayout, QWidget)
+                             QLabel, QMessageBox, QProgressDialog, QPushButton, 
+                             QScrollArea, QSpinBox, QVBoxLayout, QWidget)
 from reportlab.lib.pagesizes import A3, A4
 from reportlab.pdfgen import canvas
+
+# ロギングの設定
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+class PDFGenerationThread(QThread):
+    """PDF生成をバックグラウンドで実行するスレッド"""
+    finished = pyqtSignal(str)  # 成功時にファイルパスを送信
+    error = pyqtSignal(str)     # エラー時にメッセージを送信
+    progress = pyqtSignal(int)  # 進捗状況を送信
+
+    def __init__(self, image_paths: List[str], page_size: tuple, row_height_mm: float,
+                 col_width_mm: float, grid_line_visible: bool, grid_color: QColor,
+                 grid_width: int):
+        super().__init__()
+        self.image_paths = image_paths
+        self.page_size = page_size
+        self.row_height_mm = row_height_mm
+        self.col_width_mm = col_width_mm
+        self.grid_line_visible = grid_line_visible
+        self.grid_color = grid_color
+        self.grid_width = grid_width
+
+    def run(self):
+        try:
+            # 一時ディレクトリの作成
+            with tempfile.TemporaryDirectory() as temp_dir:
+                file_path = os.path.join(temp_dir, "output.pdf")
+                pdf = canvas.Canvas(file_path, pagesize=self.page_size)
+                
+                # mm単位をポイントに変換 (1mm = 2.83465pt)
+                MM_TO_PT = 2.83465
+                page_width, page_height = self.page_size
+                
+                # 行と列の数を計算
+                col_width_pt = self.col_width_mm * MM_TO_PT
+                row_height_pt = self.row_height_mm * MM_TO_PT
+                cols = max(1, int(page_width / col_width_pt))
+                rows = max(1, int(page_height / row_height_pt))
+                
+                total_cells = rows * cols
+                processed_cells = 0
+
+                # 画像の配置
+                for row in range(rows):
+                    for col in range(cols):
+                        cell_index = row * cols + col
+                        img_index = cell_index % len(self.image_paths) if self.image_paths else 0
+                        
+                        if self.image_paths:
+                            try:
+                                img_path = self.image_paths[img_index]
+                                with Image.open(img_path) as img:
+                                    # アスペクト比を維持したままセル内に収まるようリサイズ
+                                    img_width, img_height = img.size
+                                    img_aspect = img_width / img_height
+                                    cell_aspect = col_width_pt / row_height_pt
+                                    
+                                    if img_aspect > cell_aspect:
+                                        new_width = col_width_pt
+                                        new_height = col_width_pt / img_aspect
+                                    else:
+                                        new_height = row_height_pt
+                                        new_width = row_height_pt * img_aspect
+                                    
+                                    # セル内でセンタリング
+                                    x_offset = col * col_width_pt + (col_width_pt - new_width) / 2
+                                    y_offset = page_height - (row + 1) * row_height_pt + (row_height_pt - new_height) / 2
+                                    
+                                    img = img.resize((int(new_width), int(new_height)))
+                                    
+                                    # RGBAモードの画像をCMYKモードに変換
+                                    if img.mode == 'RGBA':
+                                        img = img.convert('RGB')
+                                    
+                                    # RGBをCMYKに変換
+                                    img_cmyk = img.convert('CMYK')
+                                    
+                                    temp_img_path = os.path.join(temp_dir, f"temp_{row}_{col}.jpg")
+                                    img_cmyk.save(temp_img_path)
+                                    
+                                    pdf.drawImage(temp_img_path, x_offset, y_offset, new_width, new_height)
+                            except UnidentifiedImageError as e:
+                                logger.error(f"画像の読み込みに失敗しました: {img_path}, エラー: {e}")
+                                continue
+                            except Exception as e:
+                                logger.error(f"画像の処理中にエラーが発生しました: {img_path}, エラー: {e}")
+                                continue
+                        
+                        processed_cells += 1
+                        progress = int((processed_cells / total_cells) * 100)
+                        self.progress.emit(progress)
+                
+                # グリッド線の描画
+                if self.grid_line_visible:
+                    r, g, b = self.grid_color.red() / 255.0, self.grid_color.green() / 255.0, self.grid_color.blue() / 255.0
+                    pdf.setStrokeColorRGB(r, g, b)
+                    pdf.setLineWidth(self.grid_width)
+                    
+                    # 垂直線
+                    for col in range(cols + 1):
+                        x = col * col_width_pt
+                        pdf.line(x, 0, x, page_height)
+                    
+                    # 水平線
+                    for row in range(rows + 1):
+                        y = page_height - row * row_height_pt
+                        pdf.line(0, y, page_width, y)
+                
+                pdf.save()
+                self.finished.emit(file_path)
+                
+        except Exception as e:
+            logger.error(f"PDF生成中にエラーが発生しました: {e}")
+            self.error.emit(str(e))
 
 
 class ImageGridApp(QWidget):
     def __init__(self):
         super().__init__()
-        self.image_paths = []
+        self.image_paths: List[str] = []
         # mm単位での行の高さと列の幅（デフォルト値）
         self.row_height_mm = 100.0
         self.col_width_mm = 100.0
         self.page_size = A4
-        self.preview_labels = []
+        self.preview_labels: List[QLabel] = []
         # グリッド線の初期設定
         self.grid_line_visible = True
         self.grid_color = QColor(0, 0, 0)  # 黒
         self.grid_width = 1
+        self.pdf_thread: Optional[PDFGenerationThread] = None
+        self.progress_dialog: Optional[QProgressDialog] = None
         self.initUI()
 
     def initUI(self):
@@ -255,81 +375,47 @@ class ImageGridApp(QWidget):
         if not file_path.lower().endswith('.pdf'):
             file_path += '.pdf'
 
-        # mm単位をポイントに変換 (1mm = 2.83465pt)
-        MM_TO_PT = 2.83465
-        page_width, page_height = self.page_size
-        
-        # 行と列の数を計算
-        col_width_pt = self.col_width_mm * MM_TO_PT
-        row_height_pt = self.row_height_mm * MM_TO_PT
-        cols = max(1, int(page_width / col_width_pt))
-        rows = max(1, int(page_height / row_height_pt))
+        # 進捗ダイアログの作成
+        self.progress_dialog = QProgressDialog("PDFを生成中...", "キャンセル", 0, 100, self)
+        self.progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        self.progress_dialog.setAutoClose(True)
+        self.progress_dialog.setAutoReset(True)
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            pdf = canvas.Canvas(file_path, pagesize=self.page_size)
-            
-            # 最初に画像を配置
-            for row in range(rows):
-                for col in range(cols):
-                    cell_index = row * cols + col
-                    # 画像がない場合は最初の画像を使用（繰り返し）
-                    img_index = cell_index % len(self.image_paths) if self.image_paths else 0
-                    
-                    if self.image_paths:
-                        img_path = self.image_paths[img_index]
-                        img = Image.open(img_path)
-                        
-                        # アスペクト比を維持したままセル内に収まるようリサイズ
-                        img_width, img_height = img.size
-                        img_aspect = img_width / img_height
-                        cell_aspect = col_width_pt / row_height_pt
-                        
-                        if img_aspect > cell_aspect:
-                            # 画像が横長の場合
-                            new_width = col_width_pt
-                            new_height = col_width_pt / img_aspect
-                        else:
-                            # 画像が縦長の場合
-                            new_height = row_height_pt
-                            new_width = row_height_pt * img_aspect
-                        
-                        # セル内でセンタリング
-                        x_offset = col * col_width_pt + (col_width_pt - new_width) / 2
-                        y_offset = page_height - (row + 1) * row_height_pt + (row_height_pt - new_height) / 2
-                        
-                        img = img.resize((int(new_width), int(new_height)))
-                        
-                        # RGBAモードの画像をCMYKモードに変換
-                        if img.mode == 'RGBA':
-                            img = img.convert('RGB')
-                        
-                        # RGBをCMYKに変換
-                        img_cmyk = img.convert('CMYK')
-                        
-                        temp_img_path = os.path.join(temp_dir, f"temp_{row}_{col}.jpg")
-                        img_cmyk.save(temp_img_path)
-                        
-                        pdf.drawImage(temp_img_path, x_offset, y_offset, new_width, new_height)
-            
-            # 画像の配置後に罫線を描画
-            if self.grid_line_visible:
-                # RGB値を0-1の範囲に変換
-                r, g, b = self.grid_color.red() / 255.0, self.grid_color.green() / 255.0, self.grid_color.blue() / 255.0
-                pdf.setStrokeColorRGB(r, g, b)
-                pdf.setLineWidth(self.grid_width)
-                
-                # 垂直線
-                for col in range(cols + 1):
-                    x = col * col_width_pt
-                    pdf.line(x, 0, x, page_height)
-                
-                # 水平線
-                for row in range(rows + 1):
-                    y = page_height - row * row_height_pt
-                    pdf.line(0, y, page_width, y)
-            
-            pdf.save()
-        QMessageBox.information(self, "完了", f"PDFを作成しました: {file_path}")
+        # PDF生成スレッドの作成と開始
+        self.pdf_thread = PDFGenerationThread(
+            self.image_paths,
+            self.page_size,
+            self.row_height_mm,
+            self.col_width_mm,
+            self.grid_line_visible,
+            self.grid_color,
+            self.grid_width
+        )
+        
+        # シグナルの接続
+        self.pdf_thread.finished.connect(lambda path: self.on_pdf_generation_finished(path, file_path))
+        self.pdf_thread.error.connect(self.on_pdf_generation_error)
+        self.pdf_thread.progress.connect(self.progress_dialog.setValue)
+        self.progress_dialog.canceled.connect(self.pdf_thread.terminate)
+        
+        # スレッドの開始
+        self.pdf_thread.start()
+        self.progress_dialog.show()
+
+    def on_pdf_generation_finished(self, temp_path: str, final_path: str):
+        """PDF生成完了時の処理"""
+        try:
+            # 一時ファイルを最終保存先にコピー
+            import shutil
+            shutil.copy2(temp_path, final_path)
+            QMessageBox.information(self, "完了", f"PDFを作成しました: {final_path}")
+        except Exception as e:
+            logger.error(f"PDFの保存中にエラーが発生しました: {e}")
+            QMessageBox.critical(self, "エラー", f"PDFの保存中にエラーが発生しました: {e}")
+
+    def on_pdf_generation_error(self, error_message: str):
+        """PDF生成エラー時の処理"""
+        QMessageBox.critical(self, "エラー", f"PDFの生成中にエラーが発生しました: {error_message}")
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
