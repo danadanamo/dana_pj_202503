@@ -1,0 +1,13 @@
+{
+    "row_height_mm": 100.0,
+    "col_width_mm": 100.0,
+    "grid_line_visible": true,
+    "grid_color": [
+        0,
+        0,
+        0,
+        255
+    ],
+    "grid_width": 1,
+    "page_size": "A4"
+}

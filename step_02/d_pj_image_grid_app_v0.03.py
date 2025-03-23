@@ -13,8 +13,9 @@ from PyQt6.QtGui import (QColor, QDragEnterEvent, QDropEvent, QImage, QPainter,
                          QPen, QPixmap)
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
                              QDoubleSpinBox, QFileDialog, QFrame, QGridLayout,
-                             QLabel, QMessageBox, QProgressDialog, QPushButton,
-                             QScrollArea, QSpinBox, QVBoxLayout, QWidget)
+                             QLabel, QMainWindow, QMenu, QMenuBar, QMessageBox,
+                             QProgressDialog, QPushButton, QScrollArea,
+                             QSpinBox, QVBoxLayout, QWidget)
 from reportlab.lib.pagesizes import A3, A4
 from reportlab.pdfgen import canvas
 
@@ -68,11 +69,26 @@ class GridSettings:
     def save_to_file(self, file_path: str = SETTINGS_FILE) -> None:
         """設定をファイルに保存"""
         try:
+            # 既存の設定ファイルをバックアップ
+            if os.path.exists(file_path):
+                backup_path = f"{file_path}.backup"
+                import shutil
+                shutil.copy2(file_path, backup_path)
+            
             with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(self.to_dict(), f, indent=4)
             logger.info(f"設定を保存しました: {file_path}")
         except Exception as e:
             logger.error(f"設定の保存中にエラーが発生しました: {e}")
+            # バックアップから復元
+            backup_path = f"{file_path}.backup"
+            if os.path.exists(backup_path):
+                try:
+                    import shutil
+                    shutil.copy2(backup_path, file_path)
+                    logger.info("設定ファイルをバックアップから復元しました")
+                except Exception as restore_error:
+                    logger.error(f"設定ファイルの復元中にエラーが発生しました: {restore_error}")
             raise
 
     @classmethod
@@ -86,6 +102,18 @@ class GridSettings:
             with open(file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             return cls.from_dict(data)
+        except json.JSONDecodeError as e:
+            logger.error(f"設定ファイルの形式が不正です: {e}")
+            # 破損した設定ファイルをバックアップ
+            backup_path = f"{file_path}.backup"
+            try:
+                if os.path.exists(file_path):
+                    import shutil
+                    shutil.copy2(file_path, backup_path)
+                    os.remove(file_path)
+            except Exception as backup_error:
+                logger.error(f"設定ファイルのバックアップ中にエラーが発生しました: {backup_error}")
+            return cls()
         except Exception as e:
             logger.error(f"設定の読み込み中にエラーが発生しました: {e}")
             return cls()
@@ -217,18 +245,37 @@ class PDFGenerationThread(QThread):
             pdf.line(0, y, page_width, y)
 
 
-class ImageGridApp(QWidget):
+class ImageGridApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.image_paths: List[str] = []
-        self.settings = GridSettings.load_from_file()  # 設定を読み込み
+        try:
+            self.settings = GridSettings.load_from_file()  # 設定を読み込み
+        except Exception as e:
+            logger.error(f"設定の読み込みに失敗しました: {e}")
+            self.settings = GridSettings()  # デフォルト設定を使用
+            QMessageBox.warning(
+                self,
+                "設定読み込みエラー",
+                "設定ファイルの読み込みに失敗しました。\nデフォルト設定で起動します。"
+            )
         self.preview_labels: List[QLabel] = []
         self.pdf_thread: Optional[PDFGenerationThread] = None
         self.progress_dialog: Optional[QProgressDialog] = None
+        
+        # メインウィジェットの作成
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        
+        # UIの初期化
         self.initUI()
 
     def initUI(self) -> None:
         """UIコンポーネントの初期化"""
+        # メニューバーの初期化
+        self._init_menubar()
+        
+        # メインレイアウトの初期化
         main_layout = QVBoxLayout()
         controls_layout = QVBoxLayout()
 
@@ -238,12 +285,69 @@ class ImageGridApp(QWidget):
         self._init_preview_area(main_layout)
 
         main_layout.addLayout(controls_layout)
-        self.setLayout(main_layout)
+        self.central_widget.setLayout(main_layout)
         self.setAcceptDrops(True)
         self.setWindowTitle("画像グリッド作成ツール")
         self.resize(600, 500)
 
         self.update_preview()
+
+    def _init_menubar(self) -> None:
+        """メニューバーの初期化"""
+        menubar = self.menuBar()
+        settings_menu = menubar.addMenu("設定")
+
+        # 設定リセットメニュー項目
+        reset_settings_action = settings_menu.addAction("設定をリセット")
+        reset_settings_action.triggered.connect(self.reset_settings)
+
+    def reset_settings(self) -> None:
+        """設定をリセットする"""
+        reply = QMessageBox.question(
+            self,
+            "設定のリセット",
+            "設定を初期状態にリセットします。\nよろしいですか？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                # 設定ファイルのバックアップを作成
+                if os.path.exists(SETTINGS_FILE):
+                    backup_path = f"{SETTINGS_FILE}.backup"
+                    import shutil
+                    shutil.copy2(SETTINGS_FILE, backup_path)
+                
+                # 設定ファイルを削除
+                if os.path.exists(SETTINGS_FILE):
+                    os.remove(SETTINGS_FILE)
+                
+                # デフォルト設定を再読み込み
+                self.settings = GridSettings()
+                
+                # UIを更新
+                self.row_height_spinbox.setValue(self.settings.row_height_mm)
+                self.col_width_spinbox.setValue(self.settings.col_width_mm)
+                self.grid_line_checkbox.setChecked(self.settings.grid_line_visible)
+                self.grid_width_spinbox.setValue(self.settings.grid_width)
+                self.page_size_combo.setCurrentText("A4" if self.settings.page_size == A4 else "A3")
+                
+                # プレビューを更新
+                self.update_preview()
+                
+                QMessageBox.information(
+                    self,
+                    "完了",
+                    "設定をリセットしました。\nアプリケーションを再起動すると、設定が反映されます。"
+                )
+            except Exception as e:
+                logger.error(f"設定のリセットに失敗しました: {e}")
+                QMessageBox.critical(
+                    self,
+                    "エラー",
+                    f"設定のリセットに失敗しました: {e}"
+                )
 
     def _init_image_controls(self, layout: QVBoxLayout) -> None:
         """画像関連のコントロールを初期化"""
@@ -308,6 +412,24 @@ class ImageGridApp(QWidget):
 
     def _init_preview_area(self, layout: QVBoxLayout) -> None:
         """プレビューエリアを初期化"""
+        # プレビューリフレッシュボタン
+        self.refresh_preview_button = QPushButton("プレビューを更新")
+        self.refresh_preview_button.clicked.connect(self.update_preview)
+        self.refresh_preview_button.setStyleSheet("""
+            QPushButton {
+                background-color: #f0f0f0;
+                border: 1px solid #cccccc;
+                border-radius: 3px;
+                padding: 5px 10px;
+                min-width: 120px;
+            }
+            QPushButton:hover {
+                background-color: #e0e0e0;
+            }
+        """)
+        layout.addWidget(self.refresh_preview_button)
+
+        # プレビューエリア
         self.preview_area_scroll = QScrollArea()
         self.preview_area_grid = QGridLayout()
         self.preview_area_grid.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -365,31 +487,47 @@ class ImageGridApp(QWidget):
                 item.widget().deleteLater()
 
         if not self.image_paths:
+            # 画像がない場合は初期メッセージを表示
+            message_label = QLabel("画像をドラッグ＆ドロップするか、\n「画像を追加」ボタンで画像を選択してください。")
+            message_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            message_label.setStyleSheet("""
+                QLabel {
+                    color: #666666;
+                    font-size: 14px;
+                    padding: 20px;
+                    background-color: #f5f5f5;
+                    border: 2px dashed #cccccc;
+                    border-radius: 5px;
+                }
+            """)
+            self.preview_area_grid.addWidget(message_label)
             return
 
-        # mm単位をポイントに変換 (1mm = 2.83465pt)
-        MM_TO_PT = 2.83465
-        page_width, page_height = self.settings.page_size
-        
         # プレビューのサイズを計算（A4/A3の比率を保持）
         preview_height = DEFAULT_PREVIEW_HEIGHT
-        preview_width = int(preview_height * (page_width / page_height))
+        preview_width = int(preview_height * (self.settings.page_size[0] / self.settings.page_size[1]))
         
         # プレビュー用のフレームを作成（用紙を模したフレーム）
         self.preview_frame = QFrame()
         self.preview_frame.setFixedSize(preview_width, preview_height)
         self.preview_frame.setFrameShape(QFrame.Shape.Box)
-        self.preview_frame.setStyleSheet("background-color: white;")
+        self.preview_frame.setStyleSheet("""
+            QFrame {
+                background-color: white;
+                border: 1px solid #cccccc;
+                border-radius: 2px;
+            }
+        """)
         
         # 行と列の数を計算
         col_width_pt = self.settings.col_width_mm * MM_TO_PT
         row_height_pt = self.settings.row_height_mm * MM_TO_PT
-        cols = max(1, int(page_width / col_width_pt))
-        rows = max(1, int(page_height / row_height_pt))
+        cols = max(1, int(self.settings.page_size[0] / col_width_pt))
+        rows = max(1, int(self.settings.page_size[1] / row_height_pt))
         
         # プレビューでのセルサイズを計算
-        cell_width = preview_width / (page_width / col_width_pt)
-        cell_height = preview_height / (page_height / row_height_pt)
+        cell_width = preview_width / (self.settings.page_size[0] / col_width_pt)
+        cell_height = preview_height / (self.settings.page_size[1] / row_height_pt)
         
         # 画像を描画するためのpaintEventを設定
         def paint_preview(event):
