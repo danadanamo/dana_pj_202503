@@ -1,22 +1,25 @@
-import sys
 import os
+import sys
 import tempfile
-from PyQt6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QPushButton, QFileDialog, QLabel, QGridLayout,
-    QSpinBox, QScrollArea, QMessageBox, QComboBox
-)
-from PyQt6.QtGui import QPixmap, QDragEnterEvent, QDropEvent, QImage
-from PyQt6.QtCore import Qt, QSize
+
 from PIL import Image
+from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QImage, QPixmap
+from PyQt6.QtWidgets import (QApplication, QComboBox, QDoubleSpinBox,
+                             QFileDialog, QGridLayout, QLabel, QMessageBox,
+                             QPushButton, QScrollArea, QSpinBox, QVBoxLayout,
+                             QWidget)
+from reportlab.lib.pagesizes import A3, A4
 from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import A4, A3
+
 
 class ImageGridApp(QWidget):
     def __init__(self):
         super().__init__()
         self.image_paths = []
-        self.grid_rows = 2
-        self.grid_cols = 2
+        # mm単位での行の高さと列の幅（デフォルト値）
+        self.row_height_mm = 100.0
+        self.col_width_mm = 100.0
         self.page_size = A4
         self.preview_labels = []
         self.initUI()
@@ -31,21 +34,23 @@ class ImageGridApp(QWidget):
         self.btn_add_images.clicked.connect(self.load_images)
         controls_layout.addWidget(self.btn_add_images)
 
-        # グリッド行数設定
-        self.row_spinbox = QSpinBox()
-        self.row_spinbox.setRange(1, 10)
-        self.row_spinbox.setValue(self.grid_rows)
-        self.row_spinbox.valueChanged.connect(self.update_grid)
-        controls_layout.addWidget(QLabel("行数:"))
-        controls_layout.addWidget(self.row_spinbox)
+        # 行の高さ設定 (mm単位)
+        self.row_height_spinbox = QDoubleSpinBox()
+        self.row_height_spinbox.setRange(10.0, 297.0)  # A4の高さ制限
+        self.row_height_spinbox.setValue(self.row_height_mm)
+        self.row_height_spinbox.setSuffix(" mm")
+        self.row_height_spinbox.valueChanged.connect(self.update_grid)
+        controls_layout.addWidget(QLabel("行の高さ:"))
+        controls_layout.addWidget(self.row_height_spinbox)
 
-        # グリッド列数設定
-        self.col_spinbox = QSpinBox()
-        self.col_spinbox.setRange(1, 10)
-        self.col_spinbox.setValue(self.grid_cols)
-        self.col_spinbox.valueChanged.connect(self.update_grid)
-        controls_layout.addWidget(QLabel("列数:"))
-        controls_layout.addWidget(self.col_spinbox)
+        # 列の幅設定 (mm単位)
+        self.col_width_spinbox = QDoubleSpinBox()
+        self.col_width_spinbox.setRange(10.0, 210.0)  # A4の幅制限
+        self.col_width_spinbox.setValue(self.col_width_mm)
+        self.col_width_spinbox.setSuffix(" mm")
+        self.col_width_spinbox.valueChanged.connect(self.update_grid)
+        controls_layout.addWidget(QLabel("列の幅:"))
+        controls_layout.addWidget(self.col_width_spinbox)
 
         # ページサイズ選択
         self.page_size_combo = QComboBox()
@@ -85,15 +90,19 @@ class ImageGridApp(QWidget):
             self.update_preview()
 
     def update_grid(self):
-        self.grid_rows = self.row_spinbox.value()
-        self.grid_cols = self.col_spinbox.value()
+        self.row_height_mm = self.row_height_spinbox.value()
+        self.col_width_mm = self.col_width_spinbox.value()
         self.update_preview()
 
     def update_page_size(self, size_text):
         if size_text == "A4":
             self.page_size = A4
+            self.row_height_spinbox.setRange(10.0, 297.0)  # A4の高さ制限
+            self.col_width_spinbox.setRange(10.0, 210.0)   # A4の幅制限
         elif size_text == "A3":
             self.page_size = A3
+            self.row_height_spinbox.setRange(10.0, 420.0)  # A3の高さ制限
+            self.col_width_spinbox.setRange(10.0, 297.0)   # A3の幅制限
         self.update_preview()
 
     def update_preview(self):
@@ -102,23 +111,38 @@ class ImageGridApp(QWidget):
             label.setParent(None)
         self.preview_labels = []
 
-        num_images = len(self.image_paths)
-        grid_size = self.grid_rows * self.grid_cols
+        if not self.image_paths:
+            return
 
-        for i in range(min(num_images, grid_size)):
-            img_path = self.image_paths[i]
+        # mm単位をポイントに変換 (1mm = 2.83465pt)
+        MM_TO_PT = 2.83465
+        page_width, page_height = self.page_size
+        
+        # 行と列の数を計算
+        col_width_pt = self.col_width_mm * MM_TO_PT
+        row_height_pt = self.row_height_mm * MM_TO_PT
+        cols = max(1, int(page_width / col_width_pt))
+        rows = max(1, int(page_height / row_height_pt))
+        
+        # プレビュー用のグリッドに画像を配置
+        for i, img_path in enumerate(self.image_paths):
+            if i >= rows * cols:
+                break  # プレビューは1ページだけ
+                
             label = QLabel()
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             pixmap = QPixmap(img_path)
 
-            max_preview_width = 200
-            max_preview_height = 200
-            pixmap_scaled = pixmap.scaled(max_preview_width, max_preview_height, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            max_preview_width = 150
+            max_preview_height = 150
+            pixmap_scaled = pixmap.scaled(max_preview_width, max_preview_height, 
+                                         Qt.AspectRatioMode.KeepAspectRatio, 
+                                         Qt.TransformationMode.SmoothTransformation)
 
             label.setPixmap(pixmap_scaled)
             self.preview_labels.append(label)
-            row = i // self.grid_cols
-            col = i % self.grid_cols
+            row = i // cols
+            col = i % cols
             self.preview_area_grid.addWidget(label, row, col)
 
     def generate_pdf(self):
@@ -134,29 +158,63 @@ class ImageGridApp(QWidget):
         if not file_path.lower().endswith('.pdf'):
             file_path += '.pdf'
 
+        # mm単位をポイントに変換 (1mm = 2.83465pt)
+        MM_TO_PT = 2.83465
         page_width, page_height = self.page_size
-        grid_size = (self.grid_cols, self.grid_rows)
+        
+        # 行と列の数を計算
+        col_width_pt = self.col_width_mm * MM_TO_PT
+        row_height_pt = self.row_height_mm * MM_TO_PT
+        cols = max(1, int(page_width / col_width_pt))
+        rows = max(1, int(page_height / row_height_pt))
 
         with tempfile.TemporaryDirectory() as temp_dir:
             pdf = canvas.Canvas(file_path, pagesize=self.page_size)
-            img_size = (page_width // grid_size[0], page_height // grid_size[1])
-            x_offset, y_offset = 0, page_height - img_size[1]
-
-            for idx, img_path in enumerate(self.image_paths[:grid_size[0] * grid_size[1]]):
-                img = Image.open(img_path)
-                img = img.resize((int(img_size[0]), int(img_size[1])))
-                temp_img_path = os.path.join(temp_dir, f"temp_{idx}.jpg")
-                img.save(temp_img_path)
-                pdf.drawImage(temp_img_path, x_offset, y_offset, img_size[0], img_size[1])
-
-                x_offset += img_size[0]
-                if (idx + 1) % grid_size[0] == 0:
-                    x_offset = 0
-                    y_offset -= img_size[1]
-
+            
+            for row in range(rows):
+                for col in range(cols):
+                    cell_index = row * cols + col
+                    # 画像がない場合は最初の画像を使用（繰り返し）
+                    img_index = cell_index % len(self.image_paths) if self.image_paths else 0
+                    
+                    if self.image_paths:
+                        img_path = self.image_paths[img_index]
+                        img = Image.open(img_path)
+                        
+                        # アスペクト比を維持したままセル内に収まるようリサイズ
+                        img_width, img_height = img.size
+                        img_aspect = img_width / img_height
+                        cell_aspect = col_width_pt / row_height_pt
+                        
+                        if img_aspect > cell_aspect:
+                            # 画像が横長の場合
+                            new_width = col_width_pt
+                            new_height = col_width_pt / img_aspect
+                        else:
+                            # 画像が縦長の場合
+                            new_height = row_height_pt
+                            new_width = row_height_pt * img_aspect
+                        
+                        # セル内でセンタリング
+                        x_offset = col * col_width_pt + (col_width_pt - new_width) / 2
+                        y_offset = page_height - (row + 1) * row_height_pt + (row_height_pt - new_height) / 2
+                        
+                        img = img.resize((int(new_width), int(new_height)))
+                        
+                        # RGBAモードの画像をCMYKモードに変換
+                        if img.mode == 'RGBA':
+                            img = img.convert('RGB')
+                        
+                        # RGBをCMYKに変換
+                        img_cmyk = img.convert('CMYK')
+                        
+                        temp_img_path = os.path.join(temp_dir, f"temp_{row}_{col}.jpg")
+                        img_cmyk.save(temp_img_path)
+                        
+                        pdf.drawImage(temp_img_path, x_offset, y_offset, new_width, new_height)
+            
             pdf.save()
         QMessageBox.information(self, "完了", f"PDFを作成しました: {file_path}")
-
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
