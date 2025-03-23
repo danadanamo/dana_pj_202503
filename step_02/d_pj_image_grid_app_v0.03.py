@@ -3,11 +3,12 @@ import logging
 import os
 import sys
 import tempfile
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image, UnidentifiedImageError
-from PyQt6.QtCore import QCache, QRectF, QSize, Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QRectF, QSize, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import (QColor, QDragEnterEvent, QDropEvent, QImage, QPainter,
                          QPen, QPixmap)
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
@@ -37,7 +38,7 @@ class GridSettings:
     row_height_mm: float = DEFAULT_ROW_HEIGHT_MM
     col_width_mm: float = DEFAULT_COL_WIDTH_MM
     grid_line_visible: bool = True
-    grid_color: QColor = QColor(0, 0, 0)
+    grid_color: QColor = field(default_factory=lambda: QColor(0, 0, 0))
     grid_width: int = DEFAULT_GRID_WIDTH
     page_size: Tuple[float, float] = A4
 
@@ -92,7 +93,7 @@ class GridSettings:
 
 class PDFGenerationThread(QThread):
     """PDF生成をバックグラウンドで実行するスレッド"""
-    finished = pyqtSignal(str)  # 成功時にファイルパスを送信
+    finished = pyqtSignal(str, str)  # 成功時に一時ファイルパスとディレクトリを送信
     error = pyqtSignal(str)     # エラー時にメッセージを送信
     progress = pyqtSignal(int)  # 進捗状況を送信
 
@@ -100,57 +101,67 @@ class PDFGenerationThread(QThread):
         super().__init__()
         self.image_paths = image_paths
         self.settings = settings
+        self.temp_dir = None
 
     def run(self) -> None:
         try:
-            with tempfile.TemporaryDirectory() as temp_dir:
-                file_path = os.path.join(temp_dir, "output.pdf")
-                pdf = canvas.Canvas(file_path, pagesize=self.settings.page_size)
-                
-                page_width, page_height = self.settings.page_size
-                
-                # 行と列の数を計算
-                col_width_pt = self.settings.col_width_mm * MM_TO_PT
-                row_height_pt = self.settings.row_height_mm * MM_TO_PT
-                cols = max(1, int(page_width / col_width_pt))
-                rows = max(1, int(page_height / row_height_pt))
-                
-                total_cells = rows * cols
-                processed_cells = 0
+            self.temp_dir = tempfile.mkdtemp()  # 一時ディレクトリを作成
+            file_path = os.path.join(self.temp_dir, "output.pdf")
+            pdf = canvas.Canvas(file_path, pagesize=self.settings.page_size)
+            
+            page_width, page_height = self.settings.page_size
+            
+            # 行と列の数を計算
+            col_width_pt = self.settings.col_width_mm * MM_TO_PT
+            row_height_pt = self.settings.row_height_mm * MM_TO_PT
+            cols = max(1, int(page_width / col_width_pt))
+            rows = max(1, int(page_height / row_height_pt))
+            
+            total_cells = rows * cols
+            processed_cells = 0
 
-                # 画像の配置
-                for row in range(rows):
-                    for col in range(cols):
-                        cell_index = row * cols + col
-                        img_index = cell_index % len(self.image_paths) if self.image_paths else 0
-                        
-                        if self.image_paths:
-                            try:
-                                self._process_image(pdf, self.image_paths[img_index], 
-                                                  row, col, col_width_pt, row_height_pt,
-                                                  page_height, temp_dir)
-                            except UnidentifiedImageError as e:
-                                logger.error(f"画像の読み込みに失敗しました: {self.image_paths[img_index]}, エラー: {e}")
-                                continue
-                            except Exception as e:
-                                logger.error(f"画像の処理中にエラーが発生しました: {self.image_paths[img_index]}, エラー: {e}")
-                                continue
-                        
-                        processed_cells += 1
-                        progress = int((processed_cells / total_cells) * 100)
-                        self.progress.emit(progress)
-                
-                # グリッド線の描画
-                if self.settings.grid_line_visible:
-                    self._draw_grid_lines(pdf, cols, rows, col_width_pt, row_height_pt,
-                                        page_width, page_height)
-                
-                pdf.save()
-                self.finished.emit(file_path)
-                
+            # 画像の配置
+            for row in range(rows):
+                for col in range(cols):
+                    cell_index = row * cols + col
+                    img_index = cell_index % len(self.image_paths) if self.image_paths else 0
+                    
+                    if self.image_paths:
+                        try:
+                            self._process_image(pdf, self.image_paths[img_index], 
+                                              row, col, col_width_pt, row_height_pt,
+                                              page_height, self.temp_dir)
+                        except UnidentifiedImageError as e:
+                            logger.error(f"画像の読み込みに失敗しました: {self.image_paths[img_index]}, エラー: {e}")
+                            continue
+                        except Exception as e:
+                            logger.error(f"画像の処理中にエラーが発生しました: {self.image_paths[img_index]}, エラー: {e}")
+                            continue
+                    
+                    processed_cells += 1
+                    progress = int((processed_cells / total_cells) * 100)
+                    self.progress.emit(progress)
+            
+            # グリッド線の描画
+            if self.settings.grid_line_visible:
+                self._draw_grid_lines(pdf, cols, rows, col_width_pt, row_height_pt,
+                                    page_width, page_height)
+            
+            pdf.save()
+            self.finished.emit(file_path, self.temp_dir)
+            
         except Exception as e:
             logger.error(f"PDF生成中にエラーが発生しました: {e}")
             self.error.emit(str(e))
+
+    def __del__(self):
+        """デストラクタ：一時ディレクトリの削除"""
+        if self.temp_dir and os.path.exists(self.temp_dir):
+            try:
+                import shutil
+                shutil.rmtree(self.temp_dir)
+            except Exception as e:
+                logger.error(f"一時ディレクトリの削除中にエラーが発生しました: {e}")
 
     def _process_image(self, pdf: canvas.Canvas, img_path: str, row: int, col: int,
                       col_width_pt: float, row_height_pt: float, page_height: float,
@@ -214,7 +225,6 @@ class ImageGridApp(QWidget):
         self.preview_labels: List[QLabel] = []
         self.pdf_thread: Optional[PDFGenerationThread] = None
         self.progress_dialog: Optional[QProgressDialog] = None
-        self.thumbnail_cache = QCache(100)  # サムネイルキャッシュ（最大100個）
         self.initUI()
 
     def initUI(self) -> None:
@@ -331,21 +341,14 @@ class ImageGridApp(QWidget):
             self.col_width_spinbox.setRange(10.0, 297.0)   # A3の幅制限
         self.update_preview()
 
+    @lru_cache(maxsize=100)
     def _create_thumbnail(self, img_path: str) -> QPixmap:
         """画像のサムネイルを生成（キャッシュ付き）"""
-        # キャッシュからサムネイルを取得
-        cached_thumbnail = self.thumbnail_cache.object(img_path)
-        if cached_thumbnail:
-            return cached_thumbnail
-
         # サムネイルを生成
         pixmap = QPixmap(img_path)
         thumbnail = pixmap.scaled(THUMBNAIL_SIZE[0], THUMBNAIL_SIZE[1],
                                 Qt.AspectRatioMode.KeepAspectRatio,
                                 Qt.TransformationMode.SmoothTransformation)
-        
-        # キャッシュに保存
-        self.thumbnail_cache.insert(img_path, thumbnail)
         return thumbnail
 
     def update_preview(self):
@@ -425,7 +428,8 @@ class ImageGridApp(QWidget):
                         
                         # 画像を描画
                         target_rect = QRectF(x, y, new_width, new_height)
-                        painter.drawPixmap(target_rect, thumbnail, thumbnail.rect())
+                        source_rect = QRectF(thumbnail.rect())
+                        painter.drawPixmap(target_rect, thumbnail, source_rect)
             
             # グリッド線の描画
             if self.settings.grid_line_visible:
@@ -485,7 +489,7 @@ class ImageGridApp(QWidget):
         )
         
         # シグナルの接続
-        self.pdf_thread.finished.connect(lambda path: self.on_pdf_generation_finished(path, file_path))
+        self.pdf_thread.finished.connect(lambda temp_path, temp_dir: self.on_pdf_generation_finished(temp_path, temp_dir, file_path))
         self.pdf_thread.error.connect(self.on_pdf_generation_error)
         self.pdf_thread.progress.connect(self.progress_dialog.setValue)
         self.progress_dialog.canceled.connect(self.pdf_thread.terminate)
@@ -494,7 +498,7 @@ class ImageGridApp(QWidget):
         self.pdf_thread.start()
         self.progress_dialog.show()
 
-    def on_pdf_generation_finished(self, temp_path: str, final_path: str):
+    def on_pdf_generation_finished(self, temp_path: str, temp_dir: str, final_path: str):
         """PDF生成完了時の処理"""
         try:
             # 一時ファイルを最終保存先にコピー
@@ -504,6 +508,12 @@ class ImageGridApp(QWidget):
         except Exception as e:
             logger.error(f"PDFの保存中にエラーが発生しました: {e}")
             QMessageBox.critical(self, "エラー", f"PDFの保存中にエラーが発生しました: {e}")
+        finally:
+            # 一時ディレクトリの削除
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception as e:
+                logger.error(f"一時ディレクトリの削除中にエラーが発生しました: {e}")
 
     def on_pdf_generation_error(self, error_message: str):
         """PDF生成エラー時の処理"""
@@ -525,7 +535,7 @@ class ImageGridApp(QWidget):
         """アプリケーション終了時の処理"""
         try:
             self.settings.save_to_file()  # 設定を保存
-            self.thumbnail_cache.clear()  # サムネイルキャッシュをクリア
+            self._create_thumbnail.cache_clear()  # サムネイルキャッシュをクリア
         except Exception as e:
             logger.error(f"設定の保存中にエラーが発生しました: {e}")
             QMessageBox.warning(self, "警告", "設定の保存に失敗しました。")
