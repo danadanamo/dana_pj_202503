@@ -257,39 +257,38 @@ class ImageProcessor:
     @staticmethod
     def _load_psd(file_path: str) -> Optional[Image.Image]:
         """PSDファイルを読み込む"""
-        psd_image = None  # psd_image を初期化
+        psd = None  # psd を初期化
         try:
             logger.info(f"PSDファイルを読み込み開始: {file_path}")
-            with psd_tools.PSDImage.open(file_path) as psd: # with ステートメントを使用
-                psd_image = psd # psd_image に代入 (finally ブロックで使用するため)
+            psd = psd_tools.PSDImage.open(file_path) # with ステートメントを削除
 
-                # レイヤー情報をログ出力
-                logger.info(f"レイヤー数: {len(psd)}")
-                for i, layer in enumerate(psd):
-                    logger.info(f"レイヤー {i}: 名前={layer.name}, 可視={layer.visible}, サイズ={layer.size}")
+            # レイヤー情報をログ出力
+            logger.info(f"レイヤー数: {len(psd)}")
+            for i, layer in enumerate(psd):
+                logger.info(f"レイヤー {i}: 名前={layer.name}, 可視={layer.visible}, サイズ={layer.size}")
 
-                # レイヤー選択ダイアログを表示
-                dialog = PSDLayerDialog(psd)
-                if dialog.exec() == QDialog.DialogCode.Accepted:
-                    selected_index = dialog.get_selected_layer_index()
-                    if selected_index is not None:
-                        logger.info(f"選択されたレイヤー: {selected_index}")
-                        try:
-                            # 選択されたレイヤーを取得
-                            if len(psd) > selected_index:
-                                selected_layer = psd[selected_index]
-                                logger.info(f"選択されたレイヤーの情報: 名前={selected_layer.name}, 可視={selected_layer.visible}, サイズ={selected_layer.size}")
+            # レイヤー選択ダイアログを表示
+            dialog = PSDLayerDialog(psd)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                selected_index = dialog.get_selected_layer_index()
+                if selected_index is not None:
+                    logger.info(f"選択されたレイヤー: {selected_index}")
+                    try:
+                        # 選択されたレイヤーを取得
+                        if len(psd) > selected_index:
+                            selected_layer = psd[selected_index]
+                            logger.info(f"選択されたレイヤーの情報: 名前={selected_layer.name}, 可視={selected_layer.visible}, サイズ={selected_layer.size}")
 
-                                # レイヤーを合成
-                                logger.info("レイヤーの合成を開始")
-                                composite = selected_layer.composite()
-                                logger.info(f"合成完了: サイズ={composite.size}, モード={composite.mode}")
-                                return composite
-                            else:
-                                raise ValueError("選択されたレイヤーが存在しません")
-                        except Exception as e:
-                            logger.error(f"レイヤーの合成中にエラーが発生: {e}", exc_info=True)
-                            return None
+                            # レイヤーを合成
+                            logger.info("レイヤーの合成を開始")
+                            composite = selected_layer.composite()
+                            logger.info(f"合成完了: サイズ={composite.size}, モード={composite.mode}")
+                            return composite
+                        else:
+                            raise ValueError("選択されたレイヤーが存在しません")
+                    except Exception as e:
+                        logger.error(f"レイヤーの合成中にエラーが発生: {e}", exc_info=True)
+                        return None
                 else:
                     logger.info("レイヤー選択がキャンセルされました")
                     return None
@@ -297,6 +296,14 @@ class ImageProcessor:
         except Exception as e:
             logger.error(f"PSDファイルの読み込みに失敗: {file_path}, エラー: {e}", exc_info=True)
             return None
+        finally:
+            # PSDファイルを確実に閉じる (try-finally ブロック内で close() を呼び出す)
+            if psd: # psd が None でない場合のみ close() を呼び出す
+                try:
+                    psd.close()
+                    logger.info("PSDファイルを閉じました")
+                except Exception as e:
+                    logger.error(f"PSDファイルのクローズ中にエラーが発生: {e}")
 
 
     @staticmethod
