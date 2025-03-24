@@ -1,3 +1,4 @@
+import io
 import json
 import logging
 import os
@@ -12,11 +13,13 @@ from PyQt6.QtCore import QRectF, QSize, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import (QColor, QDragEnterEvent, QDropEvent, QImage, QPainter,
                          QPen, QPixmap)
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
-                             QDoubleSpinBox, QFileDialog, QFrame, QGridLayout,
-                             QGroupBox, QHBoxLayout, QLabel, QMainWindow,
-                             QMenu, QMenuBar, QMessageBox, QProgressDialog,
-                             QPushButton, QScrollArea, QSpinBox, QSplitter,
-                             QVBoxLayout, QWidget)
+                             QDialog, QDialogButtonBox, QDoubleSpinBox,
+                             QFileDialog, QFrame, QGridLayout, QGroupBox,
+                             QHBoxLayout, QLabel, QLineEdit, QListWidget,
+                             QListWidgetItem, QMainWindow, QMenu, QMenuBar,
+                             QMessageBox, QProgressDialog, QPushButton,
+                             QScrollArea, QSpinBox, QSplitter, QVBoxLayout,
+                             QWidget)
 from reportlab.lib.pagesizes import A3, A4
 from reportlab.pdfgen import canvas
 
@@ -144,36 +147,160 @@ class GridSettings:
 
 
 class ImageProcessor:
-    """画像処理を担当するクラス"""
+    """画像処理クラス"""
+    
+    def __init__(self):
+        self.cmyk_profile_path = None
+        self.color_conversion_intent = 'perceptual'  # perceptual, relative, saturation, absolute
+        logger.info("ImageProcessor initialized")
+        
+    def set_cmyk_profile(self, profile_path: str) -> None:
+        """CMYKプロファイルを設定"""
+        if os.path.exists(profile_path):
+            self.cmyk_profile_path = profile_path
+            logger.info(f"CMYKプロファイルを設定: {profile_path}")
+        else:
+            logger.error(f"CMYKプロファイルが見つかりません: {profile_path}")
+            raise ValueError(f"ICCプロファイルが見つかりません: {profile_path}")
+    
+    def set_color_conversion_intent(self, intent: str) -> None:
+        """色変換方法を設定"""
+        valid_intents = ['perceptual', 'relative', 'saturation', 'absolute']
+        if intent not in valid_intents:
+            logger.error(f"無効な色変換方法です: {intent}")
+            raise ValueError(f"無効な色変換方法です: {intent}")
+        self.color_conversion_intent = intent
+        logger.info(f"色変換方法を設定: {intent}")
+    
+    @staticmethod
+    def convert_to_cmyk(image: Image.Image, profile_path: str = None, 
+                       intent: str = 'perceptual') -> Image.Image:
+        """画像をCMYK形式に変換（ICCプロファイル対応）"""
+        try:
+            from PIL import ImageCms
+            
+            if profile_path and os.path.exists(profile_path):
+                # ICCプロファイルを使用した変換
+                srgb_profile = ImageCms.createProfile("sRGB")
+                cmyk_profile = ImageCms.getOpenProfile(profile_path)
+                
+                if image.mode == 'RGBA':
+                    # アルファチャンネルを白背景で合成
+                    background = Image.new('RGB', image.size, (255, 255, 255))
+                    background.paste(image, mask=image.split()[3])
+                    image = background
+                
+                if image.mode != 'RGB':
+                    image = image.convert('RGB')
+                
+                # 色変換方法を設定
+                if intent == 'perceptual':
+                    intent = ImageCms.INTENT_PERCEPTUAL
+                elif intent == 'relative':
+                    intent = ImageCms.INTENT_RELATIVE_COLORIMETRIC
+                elif intent == 'saturation':
+                    intent = ImageCms.INTENT_SATURATION
+                else:  # absolute
+                    intent = ImageCms.INTENT_ABSOLUTE_COLORIMETRIC
+                
+                # 正確なプロファイル変換を適用
+                return ImageCms.profileToProfile(
+                    image, srgb_profile, cmyk_profile,
+                    outputMode='CMYK',
+                    intent=intent
+                )
+            else:
+                # 従来の変換方法にフォールバック
+                if image.mode == 'CMYK':
+                    return image
+                elif image.mode == 'RGBA':
+                    background = Image.new('RGB', image.size, (255, 255, 255))
+                    background.paste(image, mask=image.split()[3])
+                    image = background
+                return image.convert('CMYK')
+                
+        except ImportError:
+            # ImageCmsが利用できない場合は従来の変換方法を使用
+            if image.mode == 'CMYK':
+                return image
+            elif image.mode == 'RGBA':
+                background = Image.new('RGB', image.size, (255, 255, 255))
+                background.paste(image, mask=image.split()[3])
+                image = background
+            return image.convert('CMYK')
+    
     @staticmethod
     def load_image(file_path: str) -> Optional[Image.Image]:
         """画像ファイルを読み込む"""
         try:
+            logger.info(f"画像の読み込みを開始: {file_path}")
+            
             # ファイル拡張子を取得
             ext = os.path.splitext(file_path)[1].lower()
             
             if ext == '.psd' and PSD_SUPPORT:
+                logger.info("PSDファイルを読み込み")
                 return ImageProcessor._load_psd(file_path)
             elif ext == '.pdf' and PDF_SUPPORT:
+                logger.info("PDFファイルを読み込み")
                 return ImageProcessor._load_pdf(file_path)
             else:
                 # 通常の画像ファイル
+                logger.info("通常の画像ファイルを読み込み")
                 return Image.open(file_path)
         except Exception as e:
-            logger.error(f"画像の読み込みに失敗しました: {file_path}, エラー: {e}")
+            logger.error(f"画像の読み込みに失敗: {file_path}, エラー: {e}", exc_info=True)
             return None
-
+    
     @staticmethod
     def _load_psd(file_path: str) -> Optional[Image.Image]:
         """PSDファイルを読み込む"""
         try:
+            logger.info(f"PSDファイルを読み込み開始: {file_path}")
             psd = psd_tools.PSDImage.open(file_path)
-            # 最上位の可視レイヤーを合成
-            return psd.compose()
+            
+            # レイヤー情報をログ出力
+            logger.info(f"レイヤー数: {len(psd)}")
+            for i, layer in enumerate(psd):
+                logger.info(f"レイヤー {i}: 名前={layer.name}, 可視={layer.visible}, サイズ={layer.size}")
+            
+            # レイヤー選択ダイアログを表示
+            dialog = PSDLayerDialog(psd)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                selected_index = dialog.get_selected_layer_index()
+                if selected_index is not None:
+                    logger.info(f"選択されたレイヤー: {selected_index}")
+                    try:
+                        # 選択されたレイヤーを取得
+                        if len(psd) > selected_index:
+                            selected_layer = psd[selected_index]
+                            logger.info(f"選択されたレイヤーの情報: 名前={selected_layer.name}, 可視={selected_layer.visible}, サイズ={selected_layer.size}")
+                            
+                            # レイヤーを合成
+                            logger.info("レイヤーの合成を開始")
+                            composite = selected_layer.composite()
+                            logger.info(f"合成完了: サイズ={composite.size}, モード={composite.mode}")
+                            return composite
+                        else:
+                            raise ValueError("選択されたレイヤーが存在しません")
+                    except Exception as e:
+                        logger.error(f"レイヤーの合成中にエラーが発生: {e}", exc_info=True)
+                        return None
+            else:
+                logger.info("レイヤー選択がキャンセルされました")
+                return None
+                    
         except Exception as e:
-            logger.error(f"PSDファイルの読み込みに失敗しました: {file_path}, エラー: {e}")
+            logger.error(f"PSDファイルの読み込みに失敗: {file_path}, エラー: {e}", exc_info=True)
             return None
-
+        finally:
+            # PSDファイルを確実に閉じる
+            try:
+                psd.close()
+                logger.info("PSDファイルを閉じました")
+            except Exception as e:
+                logger.error(f"PSDファイルのクローズ中にエラーが発生: {e}")
+    
     @staticmethod
     def _load_pdf(file_path: str) -> Optional[Image.Image]:
         """PDFファイルから画像を抽出"""
@@ -195,20 +322,42 @@ class ImageProcessor:
             # バイトデータからPIL Imageを作成
             return Image.open(io.BytesIO(image_bytes))
         except Exception as e:
-            logger.error(f"PDFファイルからの画像抽出に失敗しました: {file_path}, エラー: {e}")
+            logger.error(f"PDFファイルからの画像抽出に失敗: {file_path}, エラー: {e}", exc_info=True)
             return None
-
-    @staticmethod
-    def convert_to_cmyk(image: Image.Image) -> Image.Image:
-        """画像をCMYK形式に変換"""
-        if image.mode == 'CMYK':
-            return image
-        elif image.mode == 'RGBA':
-            # アルファチャンネルを白背景で合成
-            background = Image.new('RGB', image.size, (255, 255, 255))
-            background.paste(image, mask=image.split()[3])
-            image = background
-        return image.convert('CMYK')
+    
+    def process_image(self, img_path: str, target_size: tuple) -> Optional[Image.Image]:
+        """画像を処理"""
+        try:
+            logger.info(f"画像の処理を開始: {img_path}")
+            
+            # 画像を読み込む
+            img = self.load_image(img_path)
+            if img is None:
+                logger.error(f"画像の読み込みに失敗: {img_path}")
+                return None
+            
+            # 画像の情報をログ出力
+            logger.info(f"画像情報 - サイズ: {img.size}, モード: {img.mode}")
+            
+            # 画像をリサイズ
+            img.thumbnail(target_size, Image.Resampling.LANCZOS)
+            logger.info(f"画像をリサイズ: {target_size}")
+            
+            # CMYKプロファイルが設定されている場合は変換
+            if self.cmyk_profile_path:
+                logger.info("CMYK変換を実行")
+                img = self.convert_to_cmyk(
+                    img,
+                    self.cmyk_profile_path,
+                    self.color_conversion_intent
+                )
+                logger.info(f"CMYK変換完了 - モード: {img.mode}")
+            
+            return img
+            
+        except Exception as e:
+            logger.error(f"画像処理エラー: {str(e)}", exc_info=True)
+            return None
 
 
 class PDFGenerationThread(QThread):
@@ -223,6 +372,19 @@ class PDFGenerationThread(QThread):
         self.settings = settings
         self.temp_dir = None
         self.image_processor = ImageProcessor()
+        # CMYK設定を初期化
+        self.cmyk_profile_path = None
+        self.color_conversion_intent = 'perceptual'
+
+    def set_cmyk_profile(self, profile_path: str) -> None:
+        """CMYKプロファイルを設定"""
+        self.cmyk_profile_path = profile_path
+        self.image_processor.set_cmyk_profile(profile_path)
+
+    def set_color_conversion_intent(self, intent: str) -> None:
+        """色変換方法を設定"""
+        self.color_conversion_intent = intent
+        self.image_processor.set_color_conversion_intent(intent)
 
     def run(self) -> None:
         try:
@@ -282,39 +444,58 @@ class PDFGenerationThread(QThread):
                 logger.error(f"一時ディレクトリの削除中にエラーが発生しました: {e}")
 
     def _process_image(self, pdf: canvas.Canvas, img_path: str, row: int, col: int,
-                      col_width_pt: float, row_height_pt: float, page_height: float,
-                      temp_dir: str) -> None:
+                     col_width_pt: float, row_height_pt: float, page_height: float,
+                     temp_dir: str) -> None:
         """個々の画像を処理してPDFに配置する"""
-        # 画像を読み込む
-        img = self.image_processor.load_image(img_path)
-        if img is None:
-            return
-
-        # アスペクト比を維持したままセル内に収まるようリサイズ
-        img_width, img_height = img.size
-        img_aspect = img_width / img_height
-        cell_aspect = col_width_pt / row_height_pt
-        
-        if img_aspect > cell_aspect:
-            new_width = col_width_pt
-            new_height = col_width_pt / img_aspect
-        else:
-            new_height = row_height_pt
-            new_width = row_height_pt * img_aspect
-        
-        # セル内でセンタリング
-        x_offset = col * col_width_pt + (col_width_pt - new_width) / 2
-        y_offset = page_height - (row + 1) * row_height_pt + (row_height_pt - new_height) / 2
-        
-        img = img.resize((int(new_width), int(new_height)))
-        
-        # CMYK形式に変換
-        img_cmyk = self.image_processor.convert_to_cmyk(img)
-        
-        temp_img_path = os.path.join(temp_dir, f"temp_{row}_{col}.jpg")
-        img_cmyk.save(temp_img_path)
-        
-        pdf.drawImage(temp_img_path, x_offset, y_offset, new_width, new_height)
+        try:
+            logger.info(f"画像の処理を開始: {img_path}")
+            
+            # 画像を読み込む
+            img = self.image_processor.process_image(img_path, (int(col_width_pt), int(row_height_pt)))
+            if img is None:
+                logger.error(f"画像の処理に失敗: {img_path}")
+                return
+            
+            # CMYK形式に変換
+            logger.info("CMYK変換を実行")
+            img_cmyk = self.image_processor.convert_to_cmyk(
+                img,
+                self.cmyk_profile_path,
+                self.color_conversion_intent
+            )
+            logger.info(f"CMYK変換完了 - モード: {img_cmyk.mode}")
+            
+            # TIFFとして保存（CMYK対応）
+            temp_img_path = os.path.join(temp_dir, f"temp_{row}_{col}.tif")
+            img_cmyk.save(temp_img_path, format='TIFF', compression='lzw')
+            logger.info(f"一時ファイルを保存: {temp_img_path}")
+            
+            # 画像を配置
+            x = col * col_width_pt
+            y = page_height - (row + 1) * row_height_pt
+            
+            # 画像のアスペクト比を保持
+            img_width, img_height = img_cmyk.size
+            aspect_ratio = img_width / img_height
+            
+            if aspect_ratio > 1:
+                # 横長の画像
+                new_width = col_width_pt
+                new_height = new_width / aspect_ratio
+                y += (row_height_pt - new_height) / 2
+            else:
+                # 縦長の画像
+                new_height = row_height_pt
+                new_width = new_height * aspect_ratio
+                x += (col_width_pt - new_width) / 2
+            
+            # 画像を配置
+            pdf.drawImage(temp_img_path, x, y, width=new_width, height=new_height)
+            logger.info(f"画像を配置: ({x}, {y}), サイズ: {new_width}x{new_height}")
+            
+        except Exception as e:
+            logger.error(f"画像の処理中にエラーが発生: {img_path}, エラー: {e}", exc_info=True)
+            raise
 
     def _draw_grid_lines(self, pdf: canvas.Canvas, cols: int, rows: int,
                         col_width_pt: float, row_height_pt: float,
@@ -341,6 +522,7 @@ class ImageGridApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.image_paths: List[str] = []
+        self.image_processor = ImageProcessor()  # ImageProcessorのインスタンスを作成
         try:
             self.settings = GridSettings.load_from_file()  # 設定を読み込み
         except Exception as e:
@@ -597,7 +779,10 @@ class ImageGridApp(QMainWindow):
             for file_path in files:
                 try:
                     # 画像を読み込んで検証
-                    img = ImageProcessor.load_image(file_path)
+                    img = self.image_processor.process_image(
+                        file_path,
+                        (int(self.settings.col_width_mm), int(self.settings.row_height_mm))
+                    )
                     if img is not None:
                         self.image_paths.append(file_path)
                     else:
@@ -614,6 +799,7 @@ class ImageGridApp(QMainWindow):
                         f"画像の読み込み中にエラーが発生しました: {file_path}\n{str(e)}"
                     )
             
+            # プレビューを一度だけ更新
             self.update_preview()
 
     def update_grid(self):
@@ -639,7 +825,10 @@ class ImageGridApp(QMainWindow):
         """画像のサムネイルを生成（キャッシュ付き）"""
         try:
             # 画像を読み込む
-            img = ImageProcessor.load_image(img_path)
+            img = self.image_processor.process_image(
+                img_path,
+                (int(self.settings.col_width_mm), int(self.settings.row_height_mm))
+            )
             if img is None:
                 return QPixmap()
             
@@ -659,125 +848,136 @@ class ImageGridApp(QMainWindow):
             return QPixmap()
 
     def update_preview(self):
-        # 既存のプレビューをクリア
-        for label in self.preview_labels:
-            label.clear()
-            label.setParent(None)
-        self.preview_labels = []
+        """プレビューを更新"""
+        try:
+            # 既存のプレビューをクリア
+            for label in self.preview_labels:
+                label.clear()
+                label.setParent(None)
+            self.preview_labels = []
 
-        # グリッドコンテナのクリア
-        while self.preview_area_grid.count():
-            item = self.preview_area_grid.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            # グリッドコンテナのクリア
+            while self.preview_area_grid.count():
+                item = self.preview_area_grid.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
 
-        if not self.image_paths:
-            # 画像がない場合は初期メッセージを表示
-            message_label = QLabel("画像をドラッグ＆ドロップするか、\n「画像を追加」ボタンで画像を選択してください。")
-            message_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            message_label.setStyleSheet("""
-                QLabel {
-                    color: #666666;
-                    font-size: 14px;
-                    padding: 20px;
-                    background-color: #f5f5f5;
-                    border: 2px dashed #cccccc;
-                    border-radius: 5px;
+            if not self.image_paths:
+                # 画像がない場合は初期メッセージを表示
+                message_label = QLabel("画像をドラッグ＆ドロップするか、\n「画像を追加」ボタンで画像を選択してください。")
+                message_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                message_label.setStyleSheet("""
+                    QLabel {
+                        color: #666666;
+                        font-size: 14px;
+                        padding: 20px;
+                        background-color: #f5f5f5;
+                        border: 2px dashed #cccccc;
+                        border-radius: 5px;
+                    }
+                """)
+                self.preview_area_grid.addWidget(message_label)
+                return
+
+            # プレビューのサイズを計算（A4/A3の比率を保持）
+            preview_height = DEFAULT_PREVIEW_HEIGHT
+            preview_width = int(preview_height * (self.settings.page_size[0] / self.settings.page_size[1]))
+            
+            # プレビュー用のフレームを作成（用紙を模したフレーム）
+            self.preview_frame = QFrame()
+            self.preview_frame.setFixedSize(preview_width, preview_height)
+            self.preview_frame.setFrameShape(QFrame.Shape.Box)
+            self.preview_frame.setStyleSheet("""
+                QFrame {
+                    background-color: white;
+                    border: 1px solid #cccccc;
+                    border-radius: 2px;
                 }
             """)
-            self.preview_area_grid.addWidget(message_label)
-            return
-
-        # プレビューのサイズを計算（A4/A3の比率を保持）
-        preview_height = DEFAULT_PREVIEW_HEIGHT
-        preview_width = int(preview_height * (self.settings.page_size[0] / self.settings.page_size[1]))
-        
-        # プレビュー用のフレームを作成（用紙を模したフレーム）
-        self.preview_frame = QFrame()
-        self.preview_frame.setFixedSize(preview_width, preview_height)
-        self.preview_frame.setFrameShape(QFrame.Shape.Box)
-        self.preview_frame.setStyleSheet("""
-            QFrame {
-                background-color: white;
-                border: 1px solid #cccccc;
-                border-radius: 2px;
-            }
-        """)
-        
-        # 行と列の数を計算
-        col_width_pt = self.settings.col_width_mm * MM_TO_PT
-        row_height_pt = self.settings.row_height_mm * MM_TO_PT
-        cols = max(1, int(self.settings.page_size[0] / col_width_pt))
-        rows = max(1, int(self.settings.page_size[1] / row_height_pt))
-        
-        # プレビューでのセルサイズを計算
-        cell_width = preview_width / (self.settings.page_size[0] / col_width_pt)
-        cell_height = preview_height / (self.settings.page_size[1] / row_height_pt)
-        
-        # 画像を描画するためのpaintEventを設定
-        def paint_preview(event):
-            painter = QPainter(self.preview_frame)
-            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
             
-            # 画像の描画
-            for row in range(rows):
-                for col in range(cols):
-                    cell_index = row * cols + col
-                    img_index = cell_index % len(self.image_paths) if self.image_paths else 0
+            # 行と列の数を計算
+            col_width_pt = self.settings.col_width_mm * MM_TO_PT
+            row_height_pt = self.settings.row_height_mm * MM_TO_PT
+            cols = max(1, int(self.settings.page_size[0] / col_width_pt))
+            rows = max(1, int(self.settings.page_size[1] / row_height_pt))
+            
+            # プレビューでのセルサイズを計算
+            cell_width = preview_width / (self.settings.page_size[0] / col_width_pt)
+            cell_height = preview_height / (self.settings.page_size[1] / row_height_pt)
+            
+            # 画像を描画するためのpaintEventを設定
+            def paint_preview(event):
+                painter = QPainter(self.preview_frame)
+                painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+                
+                try:
+                    # 画像の描画
+                    for row in range(rows):
+                        for col in range(cols):
+                            cell_index = row * cols + col
+                            img_index = cell_index % len(self.image_paths) if self.image_paths else 0
+                            
+                            if self.image_paths:
+                                img_path = self.image_paths[img_index]
+                                thumbnail = self._create_thumbnail(img_path)
+                                
+                                # セルのサイズとアスペクト比を計算
+                                cell_rect_width = cell_width
+                                cell_rect_height = cell_height
+                                cell_aspect = cell_rect_width / cell_rect_height
+                                
+                                # 画像のアスペクト比を計算
+                                img_aspect = thumbnail.width() / thumbnail.height()
+                                
+                                # アスペクト比に基づいてサイズを調整
+                                if img_aspect > cell_aspect:
+                                    new_width = cell_rect_width
+                                    new_height = cell_rect_width / img_aspect
+                                else:
+                                    new_height = cell_rect_height
+                                    new_width = cell_rect_height * img_aspect
+                                
+                                # セル内での位置を計算（センタリング）
+                                x = col * cell_width + (cell_width - new_width) / 2
+                                y = row * cell_height + (cell_height - new_height) / 2
+                                
+                                # 画像を描画
+                                target_rect = QRectF(x, y, new_width, new_height)
+                                source_rect = QRectF(thumbnail.rect())
+                                painter.drawPixmap(target_rect, thumbnail, source_rect)
                     
-                    if self.image_paths:
-                        img_path = self.image_paths[img_index]
-                        thumbnail = self._create_thumbnail(img_path)
+                    # グリッド線の描画
+                    if self.settings.grid_line_visible:
+                        pen = QPen(self.settings.grid_color)
+                        pen.setWidth(self.settings.grid_width)
+                        painter.setPen(pen)
                         
-                        # セルのサイズとアスペクト比を計算
-                        cell_rect_width = cell_width
-                        cell_rect_height = cell_height
-                        cell_aspect = cell_rect_width / cell_rect_height
+                        # 垂直線
+                        for col in range(cols + 1):
+                            x = col * cell_width
+                            painter.drawLine(int(x), 0, int(x), preview_height)
                         
-                        # 画像のアスペクト比を計算
-                        img_aspect = thumbnail.width() / thumbnail.height()
-                        
-                        # アスペクト比に基づいてサイズを調整
-                        if img_aspect > cell_aspect:
-                            new_width = cell_rect_width
-                            new_height = cell_rect_width / img_aspect
-                        else:
-                            new_height = cell_rect_height
-                            new_width = cell_rect_height * img_aspect
-                        
-                        # セル内での位置を計算（センタリング）
-                        x = col * cell_width + (cell_width - new_width) / 2
-                        y = row * cell_height + (cell_height - new_height) / 2
-                        
-                        # 画像を描画
-                        target_rect = QRectF(x, y, new_width, new_height)
-                        source_rect = QRectF(thumbnail.rect())
-                        painter.drawPixmap(target_rect, thumbnail, source_rect)
+                        # 水平線
+                        for row in range(rows + 1):
+                            y = row * cell_height
+                            painter.drawLine(0, int(y), preview_width, int(y))
+                finally:
+                    painter.end()
             
-            # グリッド線の描画
-            if self.settings.grid_line_visible:
-                pen = QPen(self.settings.grid_color)
-                pen.setWidth(self.settings.grid_width)
-                painter.setPen(pen)
-                
-                # 垂直線
-                for col in range(cols + 1):
-                    x = col * cell_width
-                    painter.drawLine(int(x), 0, int(x), preview_height)
-                
-                # 水平線
-                for row in range(rows + 1):
-                    y = row * cell_height
-                    painter.drawLine(0, int(y), preview_width, int(y))
+            # paintEventを設定
+            self.preview_frame.paintEvent = paint_preview
             
-            painter.end()
-        
-        # paintEventを設定
-        self.preview_frame.paintEvent = paint_preview
-        
-        # プレビューフレームをレイアウトに追加
-        self.preview_area_grid.addWidget(self.preview_frame)
-        self.preview_frame.update()
+            # プレビューフレームをレイアウトに追加
+            self.preview_area_grid.addWidget(self.preview_frame)
+            self.preview_frame.update()
+            
+        except Exception as e:
+            logger.error(f"プレビューの更新中にエラーが発生しました: {e}", exc_info=True)
+            QMessageBox.warning(
+                self,
+                "エラー",
+                f"プレビューの更新中にエラーが発生しました: {str(e)}"
+            )
 
     def select_grid_color(self):
         """グリッド線の色を選択するダイアログを表示"""
@@ -799,27 +999,50 @@ class ImageGridApp(QMainWindow):
         if not file_path.lower().endswith('.pdf'):
             file_path += '.pdf'
 
-        # 進捗ダイアログの作成
-        self.progress_dialog = QProgressDialog("PDFを生成中...", "キャンセル", 0, 100, self)
-        self.progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
-        self.progress_dialog.setAutoClose(True)
-        self.progress_dialog.setAutoReset(True)
+        try:
+            logger.info(f"PDF生成を開始: {file_path}")
+            
+            # 進捗ダイアログの作成
+            self.progress_dialog = QProgressDialog("PDFを生成中...", "キャンセル", 0, 100, self)
+            self.progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+            self.progress_dialog.setAutoClose(True)
+            self.progress_dialog.setAutoReset(True)
 
-        # PDF生成スレッドの作成と開始
-        self.pdf_thread = PDFGenerationThread(
-            self.image_paths,
-            self.settings
-        )
-        
-        # シグナルの接続
-        self.pdf_thread.finished.connect(lambda temp_path, temp_dir: self.on_pdf_generation_finished(temp_path, temp_dir, file_path))
-        self.pdf_thread.error.connect(self.on_pdf_generation_error)
-        self.pdf_thread.progress.connect(self.progress_dialog.setValue)
-        self.progress_dialog.canceled.connect(self.pdf_thread.terminate)
-        
-        # スレッドの開始
-        self.pdf_thread.start()
-        self.progress_dialog.show()
+            # PDF生成スレッドの作成と開始
+            self.pdf_thread = PDFGenerationThread(
+                self.image_paths,
+                self.settings
+            )
+            
+            # CMYK設定を渡す
+            if self.image_processor.cmyk_profile_path:
+                logger.info(f"CMYKプロファイルを設定: {self.image_processor.cmyk_profile_path}")
+                self.pdf_thread.set_cmyk_profile(self.image_processor.cmyk_profile_path)
+            
+            logger.info(f"色変換方法を設定: {self.image_processor.color_conversion_intent}")
+            self.pdf_thread.set_color_conversion_intent(self.image_processor.color_conversion_intent)
+            
+            # シグナルの接続
+            self.pdf_thread.finished.connect(
+                lambda temp_path, temp_dir: self.on_pdf_generation_finished(temp_path, temp_dir, file_path)
+            )
+            self.pdf_thread.error.connect(self.on_pdf_generation_error)
+            self.pdf_thread.progress.connect(self.progress_dialog.setValue)
+            self.progress_dialog.canceled.connect(self.pdf_thread.terminate)
+            
+            # スレッドの開始
+            self.pdf_thread.start()
+            self.progress_dialog.show()
+            
+            logger.info("PDF生成スレッドを開始")
+            
+        except Exception as e:
+            logger.error(f"PDF生成の初期化中にエラーが発生: {e}", exc_info=True)
+            QMessageBox.critical(
+                self,
+                "エラー",
+                f"PDF生成の初期化中にエラーが発生しました:\n{str(e)}"
+            )
 
     def on_pdf_generation_finished(self, temp_path: str, temp_dir: str, final_path: str):
         """PDF生成完了時の処理"""
@@ -852,7 +1075,10 @@ class ImageGridApp(QMainWindow):
             if file_path.lower().endswith((".png", ".jpg", ".jpeg", ".psd", ".pdf")):
                 try:
                     # 画像を読み込んで検証
-                    img = ImageProcessor.load_image(file_path)
+                    img = self.image_processor.process_image(
+                        file_path,
+                        (int(self.settings.col_width_mm), int(self.settings.row_height_mm))
+                    )
                     if img is not None:
                         self.image_paths.append(file_path)
                     else:
@@ -878,6 +1104,153 @@ class ImageGridApp(QMainWindow):
         except Exception as e:
             logger.error(f"設定の保存中にエラーが発生しました: {e}")
             QMessageBox.warning(self, "警告", "設定の保存に失敗しました。")
+        super().closeEvent(event)
+
+    def _create_settings_group(self):
+        """設定グループの作成"""
+        settings_group = QGroupBox("設定")
+        settings_layout = QVBoxLayout()
+        
+        # グリッド設定
+        grid_layout = QHBoxLayout()
+        grid_layout.addWidget(QLabel("行の高さ(mm):"))
+        self.row_height_spinbox = QDoubleSpinBox()
+        self.row_height_spinbox.setRange(10, 1000)
+        self.row_height_spinbox.setValue(150)
+        self.row_height_spinbox.setSingleStep(1)
+        grid_layout.addWidget(self.row_height_spinbox)
+        
+        grid_layout.addWidget(QLabel("列の幅(mm):"))
+        self.col_width_spinbox = QDoubleSpinBox()
+        self.col_width_spinbox.setRange(10, 1000)
+        self.col_width_spinbox.setValue(150)
+        self.col_width_spinbox.setSingleStep(1)
+        grid_layout.addWidget(self.col_width_spinbox)
+        
+        settings_layout.addLayout(grid_layout)
+        
+        # ページ設定
+        page_layout = QHBoxLayout()
+        page_layout.addWidget(QLabel("ページサイズ:"))
+        self.page_size_combo = QComboBox()
+        self.page_size_combo.addItems(["A4", "A3"])
+        self.page_size_combo.currentTextChanged.connect(self.update_page_size)
+        page_layout.addWidget(self.page_size_combo)
+        
+        settings_layout.addLayout(page_layout)
+        
+        # CMYK設定
+        cmyk_layout = QHBoxLayout()
+        cmyk_layout.addWidget(QLabel("CMYKプロファイル:"))
+        self.cmyk_profile_path = QLineEdit()
+        self.cmyk_profile_path.setReadOnly(True)
+        cmyk_layout.addWidget(self.cmyk_profile_path)
+        
+        browse_btn = QPushButton("参照")
+        browse_btn.clicked.connect(self._browse_cmyk_profile)
+        cmyk_layout.addWidget(browse_btn)
+        
+        settings_layout.addLayout(cmyk_layout)
+        
+        # 色変換方法
+        color_intent_layout = QHBoxLayout()
+        color_intent_layout.addWidget(QLabel("色変換方法:"))
+        self.color_intent_combo = QComboBox()
+        self.color_intent_combo.addItems(["知覚的", "相対的", "彩度優先", "絶対的"])
+        self.color_intent_combo.currentIndexChanged.connect(self._update_color_intent)
+        color_intent_layout.addWidget(self.color_intent_combo)
+        
+        settings_layout.addLayout(color_intent_layout)
+        
+        settings_group.setLayout(settings_layout)
+        return settings_group
+    
+    def _browse_cmyk_profile(self):
+        """CMYKプロファイルを選択"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "CMYKプロファイルを選択",
+            "",
+            "ICCプロファイル (*.icc *.icm)"
+        )
+        if file_path:
+            self.cmyk_profile_path.setText(file_path)
+            self.image_processor.set_cmyk_profile(file_path)
+    
+    def _update_color_intent(self, index: int):
+        """色変換方法を更新"""
+        intents = {
+            0: 'perceptual',    # 知覚的
+            1: 'relative',      # 相対的
+            2: 'saturation',    # 彩度優先
+            3: 'absolute'       # 絶対的
+        }
+        self.image_processor.set_color_conversion_intent(intents[index])
+
+
+class PSDLayerDialog(QDialog):
+    """PSDレイヤー選択ダイアログ"""
+    def __init__(self, psd: psd_tools.PSDImage, parent=None):
+        super().__init__(parent)
+        self.psd = psd
+        self.selected_layer_index = None
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+        self.initUI()
+
+    def initUI(self):
+        self.setWindowTitle("PSDレイヤー選択")
+        self.setModal(True)
+        layout = QVBoxLayout(self)
+
+        # レイヤーリスト
+        self.layer_list = QListWidget()
+        self.layer_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        
+        # レイヤー情報を追加
+        for i, layer in enumerate(self.psd):
+            layer_name = layer.name if layer.name else f"レイヤー {i+1}"
+            visible_icon = "👁" if layer.visible else "👁‍🗨"
+            size_info = f" ({layer.size[0]}x{layer.size[1]})"
+            item = QListWidgetItem(f"{visible_icon} {layer_name}{size_info}")
+            item.setData(Qt.ItemDataRole.UserRole, i)  # レイヤーインデックスを保存
+            self.layer_list.addItem(item)
+            logger.info(f"レイヤーリストに追加: {layer_name}{size_info}")
+        
+        layout.addWidget(QLabel("レイヤーを選択してください:"))
+        layout.addWidget(self.layer_list)
+
+        # ボタン
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | 
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+        # デフォルトで最初のレイヤーを選択
+        if self.layer_list.count() > 0:
+            self.layer_list.setCurrentRow(0)
+            logger.info("最初のレイヤーを選択")
+
+        # ダイアログのサイズを設定
+        self.resize(400, 500)
+        logger.info("PSDレイヤー選択ダイアログを初期化完了")
+
+    def get_selected_layer_index(self) -> Optional[int]:
+        """選択されたレイヤーのインデックスを返す"""
+        current_item = self.layer_list.currentItem()
+        if current_item:
+            index = current_item.data(Qt.ItemDataRole.UserRole)
+            logger.info(f"選択されたレイヤーインデックス: {index}")
+            return index
+        logger.warning("レイヤーが選択されていません")
+        return None
+
+    def closeEvent(self, event):
+        """ダイアログが閉じられる時の処理"""
+        logger.info("レイヤー選択ダイアログを閉じます")
+        self.reject()  # キャンセルとして扱う
         super().closeEvent(event)
 
 
