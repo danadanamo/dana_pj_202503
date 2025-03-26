@@ -8,10 +8,10 @@ from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image, UnidentifiedImageError
-from PyQt6.QtCore import QRectF, QSize, Qt, QThread, pyqtSignal
-from PyQt6.QtGui import (QColor, QDragEnterEvent, QDropEvent, QImage, QPainter,
+from PyQt5.QtCore import QRectF, QSize, Qt, QThread, pyqtSignal
+from PyQt5.QtGui import (QColor, QDragEnterEvent, QDropEvent, QImage, QPainter,
                          QPen, QPixmap)
-from PyQt6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
+from PyQt5.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
                              QDoubleSpinBox, QFileDialog, QFrame, QGridLayout,
                              QGroupBox, QHBoxLayout, QLabel, QMainWindow,
                              QMenu, QMenuBar, QMessageBox, QProgressDialog,
@@ -249,8 +249,7 @@ class PDFGenerationThread(QThread):
             img_cmyk.save(
                 temp_img_path, 
                 format='TIFF', 
-                compression='tiff_deflate', 
-                quality=95  # 高品質設定
+                compression='tiff_deflate'
             )
             
             # セル内でのセンタリング計算
